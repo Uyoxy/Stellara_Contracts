@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { StreamingResponseService } from './services/streaming-response.service';
 import { VoiceSessionService } from './services/voice-session.service';
+import { LlmService } from './services/llm.service';
 import { Server } from 'socket.io';
 import { FeatureContext } from './types/feature-context.enum';
 import { ConversationState } from './types/conversation-state.enum';
@@ -8,6 +9,7 @@ import { ConversationState } from './types/conversation-state.enum';
 describe('StreamingResponseService', () => {
   let service: StreamingResponseService;
   let voiceSessionService: VoiceSessionService;
+  let llmService: LlmService;
   let server: Server;
 
   const mockServer = {
@@ -22,6 +24,10 @@ describe('StreamingResponseService', () => {
     interruptSession: jest.fn(),
   };
 
+  const mockLlmService = {
+    generateResponse: jest.fn().mockResolvedValue({ content: 'Mock response', cached: false }),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -30,11 +36,16 @@ describe('StreamingResponseService', () => {
           provide: VoiceSessionService,
           useValue: mockVoiceSessionService,
         },
+        {
+          provide: LlmService,
+          useValue: mockLlmService,
+        },
       ],
     }).compile();
 
     service = module.get<StreamingResponseService>(StreamingResponseService);
     voiceSessionService = module.get<VoiceSessionService>(VoiceSessionService);
+    llmService = module.get<LlmService>(LlmService);
   });
 
   afterEach(() => {

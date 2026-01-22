@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { VoiceSessionService } from './voice-session.service';
+import { LlmService } from './llm.service';
 import { ConversationState } from '../types/conversation-state.enum';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -26,7 +27,10 @@ export class StreamingResponseService {
   private readonly logger = new Logger(StreamingResponseService.name);
   private readonly activeStreams = new Map<string, StreamingResponse>();
 
-  constructor(private readonly voiceSessionService: VoiceSessionService) {}
+  constructor(
+    private readonly voiceSessionService: VoiceSessionService,
+    private readonly llmService: LlmService,
+  ) {}
 
   async startStreamingResponse(
     server: Server,
@@ -86,8 +90,8 @@ export class StreamingResponseService {
     // Update session state to responding
     await this.voiceSessionService.updateSessionState(sessionId, ConversationState.RESPONDING);
 
-    // Simulate streaming AI response (in real implementation, this would be from AI service)
-    const fullResponse = await this.mockAIResponse(userMessage);
+    // Get response from LLM service (with quotas, rate limiting, and caching)
+    const { content: fullResponse } = await this.llmService.generateResponse(session.userId, userMessage);
     const words = fullResponse.split(' ');
     
     // Update session state to responding
@@ -226,17 +230,5 @@ export class StreamingResponseService {
   getActiveStreamsForSession(sessionId: string): StreamingResponse[] {
     return Array.from(this.activeStreams.values())
       .filter(stream => stream.sessionId === sessionId);
-  }
-
-  private async mockAIResponse(userMessage: string): Promise<string> {
-    // Mock AI response - in real implementation, this would call an AI service
-    const responses = [
-      "I understand your question about " + userMessage + ". Let me help you with that.",
-      "That's an interesting point. Based on what you've said, I think the best approach would be to consider multiple factors.",
-      "I can definitely help you with that. Here's what I recommend based on your situation.",
-      "Thanks for sharing that with me. Let me provide you with some guidance on this topic.",
-    ];
-
-    return responses[Math.floor(Math.random() * responses.length)];
   }
 }
