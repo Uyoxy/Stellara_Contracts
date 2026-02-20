@@ -126,14 +126,16 @@ impl UpgradeableTradingContract {
         // Set initialization flag
         TradingStorage::set_initialized(&env);
 
-        // Store roles in instance storage (cheaper for static data)
         let mut roles = soroban_sdk::Map::new(&env);
-        roles.set(admin, GovernanceRole::Admin);
+        roles.set(admin.clone(), GovernanceRole::Admin);
         for approver in approvers.iter() {
             roles.set(approver, GovernanceRole::Approver);
         }
-        roles.set(executor, GovernanceRole::Executor);
+        roles.set(executor.clone(), GovernanceRole::Executor);
         TradingStorage::set_roles(&env, &roles);
+
+        let roles_key = symbol_short!("roles");
+        env.storage().persistent().set(&roles_key, &roles);
 
         // Initialize stats in instance storage
         TradingStorage::set_stats(&env, &OptimizedTradeStats::default());
@@ -457,7 +459,21 @@ impl UpgradeableTradingContract {
 
         Ok(())
     }
-    
+
+    pub fn pause_upgrade_governance(env: Env, admin: Address) -> Result<(), TradeError> {
+        admin.require_auth();
+
+        GovernanceManager::pause_governance(&env, admin)
+            .map_err(|_| TradeError::Unauthorized)
+    }
+
+    pub fn resume_upgrade_governance(env: Env, admin: Address) -> Result<(), TradeError> {
+        admin.require_auth();
+
+        GovernanceManager::resume_governance(&env, admin)
+            .map_err(|_| TradeError::Unauthorized)
+    }
+
     /// Helper: Check if address is admin
     fn is_admin(env: &Env, address: &Address) -> bool {
         TradingStorage::get_role(env, address) == Some(GovernanceRole::Admin)

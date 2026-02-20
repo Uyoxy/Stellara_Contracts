@@ -4,6 +4,9 @@ use crate::events::{
     ProposalExecutedEvent, ProposalCancelledEvent,
 };
 
+const MIN_TIMELOCK_SECONDS: u64 = 3600;
+const MAX_TIMELOCK_SECONDS: u64 = 30 * 24 * 60 * 60;
+
 /// Upgrade proposal that must be approved via governance
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,6 +59,8 @@ pub enum GovernanceError {
     InvalidThreshold = 2006,
     DuplicateApproval = 2007,
     ProposalNotFound = 2008,
+    InvalidTimelock = 2009,
+    UpgradesPaused = 2010,
 }
 
 impl From<GovernanceError> for soroban_sdk::Error {
@@ -73,6 +78,33 @@ impl From<soroban_sdk::Error> for GovernanceError {
 pub struct GovernanceManager;
 
 impl GovernanceManager {
+    fn is_paused(env: &Env) -> bool {
+        let paused_key = symbol_short!("gpaused");
+        env.storage().persistent().get(&paused_key).unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), GovernanceError> {
+        if Self::is_paused(env) {
+            Err(GovernanceError::UpgradesPaused)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn pause_governance(env: &Env, admin: Address) -> Result<(), GovernanceError> {
+        Self::require_role(env, &admin, GovernanceRole::Admin);
+        let paused_key = symbol_short!("gpaused");
+        env.storage().persistent().set(&paused_key, &true);
+        Ok(())
+    }
+
+    pub fn resume_governance(env: &Env, admin: Address) -> Result<(), GovernanceError> {
+        Self::require_role(env, &admin, GovernanceRole::Admin);
+        let paused_key = symbol_short!("gpaused");
+        env.storage().persistent().set(&paused_key, &false);
+        Ok(())
+    }
+
     /// Validate that an address has a specific role
     pub fn require_role(env: &Env, address: &Address, required_role: GovernanceRole) {
         let roles_key = symbol_short!("roles");
@@ -100,12 +132,25 @@ impl GovernanceManager {
         approvers: Vec<Address>,
         timelock_delay: u64,
     ) -> Result<u64, GovernanceError> {
+        Self::require_not_paused(env)?;
         // Validate proposer is admin
         Self::require_role(env, &proposer, GovernanceRole::Admin);
 
         // Validate threshold
         if approval_threshold == 0 || approval_threshold > approvers.len() as u32 {
             return Err(GovernanceError::InvalidThreshold);
+        }
+
+        if timelock_delay < MIN_TIMELOCK_SECONDS || timelock_delay > MAX_TIMELOCK_SECONDS {
+            return Err(GovernanceError::InvalidTimelock);
+        }
+
+        let mut unique_approvers = Vec::new(env);
+        for addr in approvers.iter() {
+            if unique_approvers.iter().any(|a| a == addr) {
+                return Err(GovernanceError::InvalidProposal);
+            }
+            unique_approvers.push_back(addr.clone());
         }
 
         // Get next proposal ID
@@ -176,6 +221,7 @@ impl GovernanceManager {
         proposal_id: u64,
         approver: Address,
     ) -> Result<(), GovernanceError> {
+        Self::require_not_paused(env)?;
         // Validate approver has permission
         Self::require_role(env, &approver, GovernanceRole::Approver);
 
@@ -248,6 +294,7 @@ impl GovernanceManager {
         proposal_id: u64,
         executor: Address,
     ) -> Result<(), GovernanceError> {
+        Self::require_not_paused(env)?;
         // Validate executor has permission
         Self::require_role(env, &executor, GovernanceRole::Executor);
 
