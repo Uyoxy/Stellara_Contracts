@@ -4,7 +4,8 @@ use shared::fees::{FeeManager, FeeError};
 use shared::governance::{
     GovernanceManager, GovernanceRole, UpgradeProposal,
 };
-use shared::oracle::{OracleAggregate, OracleError, fetch_aggregate_price};
+use shared::oracle::{OracleAggregate, fetch_aggregate_price};
+use shared::events::{EventEmitter, TradeExecutedEvent};
 
 /// Version of this contract implementation
 const CONTRACT_VERSION: u32 = 1;
@@ -95,7 +96,7 @@ pub enum TradeError {
     NotInitialized = 3004,
     BatchSizeExceeded = 3005,
     BatchOperationFailed = 3006,
-    OracleFailure = 3005,
+    OracleFailure = 3007,
 }
 
 impl From<TradeError> for soroban_sdk::Error {

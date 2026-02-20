@@ -3,7 +3,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, token, Address, Env, Symbol, Vec};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, testutils::Events as _, token, Address, Env, Symbol, Vec, IntoVal};
 use shared::governance::ProposalStatus;
 use shared::fees::FeeError;
 use std::sync::Mutex;
@@ -549,25 +549,20 @@ fn test_batch_trade_emits_events() {
     client.batch_trade(&requests);
 
     let events = env.events().all();
-
     // Should have fee and trade events
-    let has_trade_event = events.iter().any(|(_, topics, _)| {
+    let has_trade_event = events.iter().any(|(_, topics, _): (_, _, _)| {
         if let Some(first_topic) = topics.first() {
-            let topic_str: Result<Symbol, _> = first_topic.clone().try_into_val(&env);
-            if let Ok(sym) = topic_str {
-                return sym == symbol_short!("trade");
-            }
+            let topic_sym: Symbol = first_topic.clone().into_val(&env);
+            return topic_sym == symbol_short!("trade");
         }
         false
     });
     assert!(has_trade_event, "Trade event not found");
 
-    let has_fee_event = events.iter().any(|(_, topics, _)| {
+    let has_fee_event = events.iter().any(|(_, topics, _): (_, _, _)| {
         if let Some(first_topic) = topics.first() {
-            let topic_str: Result<Symbol, _> = first_topic.clone().try_into_val(&env);
-            if let Ok(sym) = topic_str {
-                return sym == symbol_short!("fee");
-            }
+            let topic_sym: Symbol = first_topic.clone().into_val(&env);
+            return topic_sym == symbol_short!("fee");
         }
         false
     });

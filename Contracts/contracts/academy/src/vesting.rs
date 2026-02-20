@@ -2,7 +2,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, symbol_sho
 
 /// Vesting schedule for an academy reward
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VestingSchedule {
     pub beneficiary: Address,
     pub amount: i128,
@@ -54,7 +54,7 @@ pub struct BatchClaimResult {
 
 /// Batch vesting operation result
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchVestingOperation {
     pub successful_grants: soroban_sdk::Vec<u64>,
     pub failed_grants: soroban_sdk::Vec<BatchVestingResult>,
