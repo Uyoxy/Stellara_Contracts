@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, symbol_short};
+use crate::storage::AcademyStorage;
 
 /// Vesting schedule for an academy reward
 #[contracttype]
@@ -143,32 +144,43 @@ impl AcademyVestingContract {
         reward_token: Address,
         governance: Address,
     ) -> Result<(), VestingError> {
-        // Check if already initialized
-        let init_key = symbol_short!("init");
-        if env.storage().persistent().has(&init_key) {
+        // Check if already initialized using optimized storage
+        if AcademyStorage::is_initialized(&env) {
             return Err(VestingError::Unauthorized);
         }
 
         // Set initialization flag
-        env.storage().persistent().set(&init_key, &true);
+        AcademyStorage::set_initialized(&env);
 
-        // Store admin
-        let admin_key = symbol_short!("admin");
-        env.storage().persistent().set(&admin_key, &admin);
+        // Store admin in instance storage (cheaper for static data)
+        AcademyStorage::set_admin(&env, &admin);
 
-        // Store reward token
-        let token_key = symbol_short!("token");
-        env.storage().persistent().set(&token_key, &reward_token);
+        // Store reward token in instance storage
+        AcademyStorage::set_token(&env, &reward_token);
 
-        // Store governance address
-        let gov_key = symbol_short!("gov");
-        env.storage().persistent().set(&gov_key, &governance);
-
-        // Initialize grant counter
-        let counter_key = symbol_short!("cnt");
-        env.storage().persistent().set(&counter_key, &0u64);
+        // Store governance address in instance storage
+        AcademyStorage::set_governance(&env, &governance);
 
         Ok(())
+    }
+    
+    /// Migrate storage from legacy format (admin only)
+    pub fn migrate_storage(env: Env, admin: Address) -> Result<u64, VestingError> {
+        admin.require_auth();
+        
+        // Verify admin
+        let stored_admin = AcademyStorage::get_admin(&env)
+            .ok_or(VestingError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(VestingError::Unauthorized);
+        }
+        
+        if !AcademyStorage::has_legacy_data(&env) {
+            return Ok(0);
+        }
+        
+        let migrated = AcademyStorage::migrate_storage(&env);
+        Ok(migrated)
     }
 
     /// Grant a vesting schedule to a beneficiary
@@ -183,14 +195,9 @@ impl AcademyVestingContract {
     ) -> Result<u64, VestingError> {
         admin.require_auth();
 
-        // Verify caller is admin
-        let admin_key = symbol_short!("admin");
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        // Verify caller is admin using optimized storage
+        let stored_admin = AcademyStorage::get_admin(&env)
             .ok_or(VestingError::Unauthorized)?;
-
         if admin != stored_admin {
             return Err(VestingError::Unauthorized);
         }
@@ -203,15 +210,8 @@ impl AcademyVestingContract {
             return Err(VestingError::InvalidSchedule);
         }
 
-        // Get next grant ID
-        let counter_key = symbol_short!("cnt");
-        let grant_id: u64 = env
-            .storage()
-            .persistent()
-            .get(&counter_key)
-            .unwrap_or(0u64);
-
-        let next_id = grant_id + 1;
+        // Get next grant ID using optimized storage
+        let grant_id = AcademyStorage::increment_counter(&env);
 
         // Create vesting schedule
         let schedule = VestingSchedule {
@@ -225,25 +225,18 @@ impl AcademyVestingContract {
             revoke_time: 0,
         };
 
-        // Store schedule
-        let schedules_key = symbol_short!("sched");
-        let mut schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
-
-        schedules.set(next_id, schedule);
-        env.storage().persistent().set(&schedules_key, &schedules);
-
-        // Update counter
-        env.storage()
-            .persistent()
-            .set(&counter_key, &next_id);
+        // Store schedule with optimized individual key
+        AcademyStorage::set_schedule(&env, grant_id, &schedule);
+        
+        // Update user index
+        AcademyStorage::add_schedule_to_user_index(&env, &beneficiary, grant_id);
+        
+        // Add to active index
+        AcademyStorage::add_to_active_index(&env, grant_id);
 
         // Emit grant event
         let grant_event = GrantEvent {
-            grant_id: next_id,
+            grant_id,
             beneficiary,
             amount,
             start_time,
@@ -255,7 +248,7 @@ impl AcademyVestingContract {
 
         env.events().publish((symbol_short!("grant"),), grant_event);
 
-        Ok(next_id)
+        Ok(grant_id)
     }
 
     /// Grant multiple vesting schedules in a single transaction
@@ -271,14 +264,9 @@ impl AcademyVestingContract {
             return Err(VestingError::BatchSizeExceeded);
         }
 
-        // Verify caller is admin
-        let admin_key = symbol_short!("admin");
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        // Verify caller is admin using optimized storage
+        let stored_admin = AcademyStorage::get_admin(&env)
             .ok_or(VestingError::Unauthorized)?;
-
         if admin != stored_admin {
             return Err(VestingError::Unauthorized);
         }
@@ -287,30 +275,12 @@ impl AcademyVestingContract {
         let mut failed_grants = soroban_sdk::Vec::new(&env);
         let mut total_amount_granted = 0i128;
 
-        // Get current grant counter
-        let counter_key = symbol_short!("cnt");
-        let mut current_id: u64 = env
-            .storage()
-            .persistent()
-            .get(&counter_key)
-            .unwrap_or(0u64);
-
-        // Get existing schedules
-        let schedules_key = symbol_short!("sched");
-        let mut schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
-
         // Process each vesting request
         for request in requests.iter() {
             let result = match Self::process_single_vesting_grant(
                 &env,
                 &request,
                 &admin,
-                &mut current_id,
-                &mut schedules,
             ) {
                 Ok(grant_id) => {
                     successful_grants.push_back(grant_id);
@@ -331,10 +301,6 @@ impl AcademyVestingContract {
             failed_grants.push_back(result);
         }
 
-        // Update storage
-        env.storage().persistent().set(&schedules_key, &schedules);
-        env.storage().persistent().set(&counter_key, &current_id);
-
         Ok(BatchVestingOperation {
             successful_grants,
             failed_grants,
@@ -348,8 +314,6 @@ impl AcademyVestingContract {
         env: &Env,
         request: &BatchVestingRequest,
         admin: &Address,
-        current_id: &mut u64,
-        schedules: &mut soroban_sdk::Map<u64, VestingSchedule>,
     ) -> Result<u64, VestingError> {
         // Validate schedule
         if request.amount <= 0 {
@@ -359,9 +323,8 @@ impl AcademyVestingContract {
             return Err(VestingError::InvalidSchedule);
         }
 
-        // Increment grant ID
-        *current_id += 1;
-        let grant_id = *current_id;
+        // Get next grant ID using optimized storage
+        let grant_id = AcademyStorage::increment_counter(env);
 
         // Create vesting schedule
         let schedule = VestingSchedule {
@@ -375,8 +338,14 @@ impl AcademyVestingContract {
             revoke_time: 0,
         };
 
-        // Store schedule
-        schedules.set(grant_id, schedule);
+        // Store schedule with optimized key
+        AcademyStorage::set_schedule(env, grant_id, &schedule);
+        
+        // Update user index
+        AcademyStorage::add_schedule_to_user_index(env, &request.beneficiary, grant_id);
+        
+        // Add to active index
+        AcademyStorage::add_to_active_index(env, grant_id);
 
         // Emit grant event
         let grant_event = GrantEvent {
@@ -409,23 +378,10 @@ impl AcademyVestingContract {
 
         let mut results = soroban_sdk::Vec::new(&env);
 
-        // Get token address once
-        let token_key = symbol_short!("token");
-        let token: Address = env
-            .storage()
-            .persistent()
-            .get(&token_key)
+        // Get token address from optimized storage
+        let token = AcademyStorage::get_token(&env)
             .ok_or(VestingError::Unauthorized)?;
-
         let token_client = soroban_sdk::token::Client::new(&env, &token);
-
-        // Get schedules once
-        let schedules_key = symbol_short!("sched");
-        let mut schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .ok_or(VestingError::GrantNotFound)?;
 
         // Process each claim request
         for request in requests.iter() {
@@ -434,7 +390,6 @@ impl AcademyVestingContract {
             let result = match Self::process_single_claim(
                 &env,
                 &request,
-                &mut schedules,
                 &token_client,
             ) {
                 Ok(amount) => {
@@ -456,9 +411,6 @@ impl AcademyVestingContract {
             results.push_back(result);
         }
 
-        // Update schedules in storage
-        env.storage().persistent().set(&schedules_key, &schedules);
-
         Ok(results)
     }
 
@@ -466,11 +418,9 @@ impl AcademyVestingContract {
     fn process_single_claim(
         env: &Env,
         request: &BatchClaimRequest,
-        schedules: &mut soroban_sdk::Map<u64, VestingSchedule>,
         token_client: &soroban_sdk::token::Client,
     ) -> Result<i128, VestingError> {
-        let mut schedule = schedules
-            .get(request.grant_id)
+        let mut schedule = AcademyStorage::get_schedule::<VestingSchedule>(env, request.grant_id)
             .ok_or(VestingError::GrantNotFound)?;
 
         // Verify beneficiary matches
@@ -498,14 +448,16 @@ impl AcademyVestingContract {
 
         // Verify contract has sufficient balance
         let balance = token_client.balance(&env.current_contract_address());
-
         if balance < vested_amount {
             return Err(VestingError::InsufficientBalance);
         }
 
         // Mark as claimed (atomic operation)
         schedule.claimed = true;
-        schedules.set(request.grant_id, schedule.clone());
+        AcademyStorage::set_schedule(env, request.grant_id, &schedule);
+        
+        // Remove from active index
+        AcademyStorage::remove_from_active_index(env, request.grant_id);
 
         // Transfer tokens
         token_client.transfer(
@@ -531,16 +483,8 @@ impl AcademyVestingContract {
     pub fn claim(env: Env, grant_id: u64, beneficiary: Address) -> Result<i128, VestingError> {
         beneficiary.require_auth();
 
-        // Get vesting schedule
-        let schedules_key = symbol_short!("sched");
-        let mut schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .ok_or(VestingError::GrantNotFound)?;
-
-        let mut schedule = schedules
-            .get(grant_id)
+        // Get vesting schedule from optimized storage
+        let mut schedule = AcademyStorage::get_schedule::<VestingSchedule>(&env, grant_id)
             .ok_or(VestingError::GrantNotFound)?;
 
         // Verify beneficiary matches
@@ -560,34 +504,27 @@ impl AcademyVestingContract {
 
         // Calculate vested amount
         let current_time = env.ledger().timestamp();
-        let vested_amount = Self::calculate_vested_amount(
-            &schedule,
-            current_time,
-        )?;
+        let vested_amount = Self::calculate_vested_amount(&schedule, current_time)?;
 
         if vested_amount == 0 {
             return Err(VestingError::NotVested);
         }
 
         // Verify contract has sufficient balance
-        let token_key = symbol_short!("token");
-        let token: Address = env
-            .storage()
-            .persistent()
-            .get(&token_key)
+        let token = AcademyStorage::get_token(&env)
             .ok_or(VestingError::Unauthorized)?;
-
         let token_client = soroban_sdk::token::Client::new(&env, &token);
         let balance = token_client.balance(&env.current_contract_address());
-
         if balance < vested_amount {
             return Err(VestingError::InsufficientBalance);
         }
 
         // Mark as claimed (atomic operation)
         schedule.claimed = true;
-        schedules.set(grant_id, schedule.clone());
-        env.storage().persistent().set(&schedules_key, &schedules);
+        AcademyStorage::set_schedule(&env, grant_id, &schedule);
+        
+        // Remove from active index
+        AcademyStorage::remove_from_active_index(&env, grant_id);
 
         // Transfer tokens
         token_client.transfer(
@@ -618,28 +555,15 @@ impl AcademyVestingContract {
     ) -> Result<(), VestingError> {
         admin.require_auth();
 
-        // Verify caller is admin
-        let admin_key = symbol_short!("admin");
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        // Verify caller is admin using optimized storage
+        let stored_admin = AcademyStorage::get_admin(&env)
             .ok_or(VestingError::Unauthorized)?;
-
         if admin != stored_admin {
             return Err(VestingError::Unauthorized);
         }
 
-        // Get vesting schedule
-        let schedules_key = symbol_short!("sched");
-        let mut schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .ok_or(VestingError::GrantNotFound)?;
-
-        let mut schedule = schedules
-            .get(grant_id)
+        // Get vesting schedule from optimized storage
+        let mut schedule = AcademyStorage::get_schedule::<VestingSchedule>(&env, grant_id)
             .ok_or(VestingError::GrantNotFound)?;
 
         // Cannot revoke already claimed
@@ -666,8 +590,10 @@ impl AcademyVestingContract {
         // Mark as revoked
         schedule.revoked = true;
         schedule.revoke_time = current_time;
-        schedules.set(grant_id, schedule.clone());
-        env.storage().persistent().set(&schedules_key, &schedules);
+        AcademyStorage::set_schedule(&env, grant_id, &schedule);
+        
+        // Remove from active index
+        AcademyStorage::remove_from_active_index(&env, grant_id);
 
         // Emit revoke event
         let revoke_event = RevokeEvent {
@@ -684,29 +610,18 @@ impl AcademyVestingContract {
 
     /// Query vesting schedule details
     pub fn get_vesting(env: Env, grant_id: u64) -> Result<VestingSchedule, VestingError> {
-        let schedules_key = symbol_short!("sched");
-        let schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .ok_or(VestingError::GrantNotFound)?;
-
-        schedules
-            .get(grant_id)
+        AcademyStorage::get_schedule::<VestingSchedule>(&env, grant_id)
             .ok_or(VestingError::GrantNotFound)
+    }
+    
+    /// Get vesting schedules for a user
+    pub fn get_user_vestings(env: Env, beneficiary: Address) -> soroban_sdk::Vec<VestingSchedule> {
+        AcademyStorage::get_user_schedules::<VestingSchedule>(&env, &beneficiary)
     }
 
     /// Calculate vested amount at current time
     pub fn get_vested_amount(env: Env, grant_id: u64) -> Result<i128, VestingError> {
-        let schedules_key = symbol_short!("sched");
-        let schedules: soroban_sdk::Map<u64, VestingSchedule> = env
-            .storage()
-            .persistent()
-            .get(&schedules_key)
-            .ok_or(VestingError::GrantNotFound)?;
-
-        let schedule = schedules
-            .get(grant_id)
+        let schedule = AcademyStorage::get_schedule::<VestingSchedule>(&env, grant_id)
             .ok_or(VestingError::GrantNotFound)?;
 
         let current_time = env.ledger().timestamp();
@@ -750,26 +665,11 @@ impl AcademyVestingContract {
 
     /// Get contract information
     pub fn get_info(env: Env) -> Result<(Address, Address, Address), VestingError> {
-        let admin_key = symbol_short!("admin");
-        let token_key = symbol_short!("token");
-        let gov_key = symbol_short!("gov");
-
-        let admin = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        let admin = AcademyStorage::get_admin(&env)
             .ok_or(VestingError::Unauthorized)?;
-
-        let token = env
-            .storage()
-            .persistent()
-            .get(&token_key)
+        let token = AcademyStorage::get_token(&env)
             .ok_or(VestingError::Unauthorized)?;
-
-        let governance = env
-            .storage()
-            .persistent()
-            .get(&gov_key)
+        let governance = AcademyStorage::get_governance(&env)
             .ok_or(VestingError::Unauthorized)?;
 
         Ok((admin, token, governance))

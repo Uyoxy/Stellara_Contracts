@@ -2,6 +2,9 @@
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, symbol_short};
 use shared::events::{EventEmitter, RewardAddedEvent, RewardClaimedEvent};
 
+mod storage;
+use storage::{SocialRewardsStorage, OptimizedRewardStats, OptimizedReward};
+
 /// Social reward record
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -64,15 +67,8 @@ pub struct BatchRewardOperation {
     pub gas_saved: i128,
 }
 
-/// Social rewards statistics
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct RewardStats {
-    pub total_rewards: u64,
-    pub total_amount: i128,
-    pub total_claimed: i128,
-    pub last_reward_id: u64,
-}
+/// Social rewards statistics (re-exported from storage module)
+pub type RewardStats = OptimizedRewardStats;
 
 /// Social rewards error codes
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -117,34 +113,43 @@ impl SocialRewardsContract {
         admin: Address,
         reward_token: Address,
     ) -> Result<(), RewardError> {
-        // Check if already initialized
-        let init_key = symbol_short!("init");
-        if env.storage().persistent().has(&init_key) {
+        // Check if already initialized using optimized storage
+        if SocialRewardsStorage::is_initialized(&env) {
             return Err(RewardError::Unauthorized);
         }
 
         // Set initialization flag
-        env.storage().persistent().set(&init_key, &true);
+        SocialRewardsStorage::set_initialized(&env);
 
-        // Store admin
-        let admin_key = symbol_short!("admin");
-        env.storage().persistent().set(&admin_key, &admin);
+        // Store admin in instance storage (cheaper for static data)
+        SocialRewardsStorage::set_admin(&env, &admin);
 
-        // Store reward token
-        let token_key = symbol_short!("token");
-        env.storage().persistent().set(&token_key, &reward_token);
+        // Store reward token in instance storage
+        SocialRewardsStorage::set_token(&env, &reward_token);
 
-        // Initialize stats
-        let stats = RewardStats {
-            total_rewards: 0,
-            total_amount: 0,
-            total_claimed: 0,
-            last_reward_id: 0,
-        };
-        let stats_key = symbol_short!("stats");
-        env.storage().persistent().set(&stats_key, &stats);
+        // Initialize stats in instance storage
+        SocialRewardsStorage::set_stats(&env, &OptimizedRewardStats::default());
 
         Ok(())
+    }
+    
+    /// Migrate storage from legacy format (admin only)
+    pub fn migrate_storage(env: Env, admin: Address) -> Result<u64, RewardError> {
+        admin.require_auth();
+        
+        // Verify admin
+        let stored_admin = SocialRewardsStorage::get_admin(&env)
+            .ok_or(RewardError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(RewardError::Unauthorized);
+        }
+        
+        if !SocialRewardsStorage::has_legacy_data(&env) {
+            return Ok(0);
+        }
+        
+        let migrated = SocialRewardsStorage::migrate_storage(&env);
+        Ok(migrated)
     }
 
     /// Add a reward for a user (admin only)
@@ -158,14 +163,9 @@ impl SocialRewardsContract {
     ) -> Result<u64, RewardError> {
         admin.require_auth();
 
-        // Verify caller is admin
-        let admin_key = symbol_short!("admin");
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        // Verify caller is admin using optimized storage
+        let stored_admin = SocialRewardsStorage::get_admin(&env)
             .ok_or(RewardError::NotInitialized)?;
-
         if admin != stored_admin {
             return Err(RewardError::Unauthorized);
         }
@@ -175,24 +175,12 @@ impl SocialRewardsContract {
             return Err(RewardError::InvalidAmount);
         }
 
-        // Get next reward ID
-        let stats_key = symbol_short!("stats");
-        let mut stats: RewardStats = env
-            .storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(RewardStats {
-                total_rewards: 0,
-                total_amount: 0,
-                total_claimed: 0,
-                last_reward_id: 0,
-            });
-
-        let reward_id = stats.last_reward_id + 1;
+        // Get next reward ID using optimized storage
+        let reward_id = SocialRewardsStorage::increment_reward_stats(&env, amount);
         let timestamp = env.ledger().timestamp();
 
         // Create reward record
-        let reward = Reward {
+        let reward = OptimizedReward {
             id: reward_id,
             user: user.clone(),
             amount,
@@ -204,33 +192,8 @@ impl SocialRewardsContract {
             claimed_at: 0,
         };
 
-        // Store reward
-        let rewards_key = symbol_short!("rewards");
-        let mut rewards: soroban_sdk::Map<u64, Reward> = env
-            .storage()
-            .persistent()
-            .get(&rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
-
-        rewards.set(reward_id, reward);
-        env.storage().persistent().set(&rewards_key, &rewards);
-
-        // Update stats
-        stats.total_rewards += 1;
-        stats.total_amount += amount;
-        stats.last_reward_id = reward_id;
-        env.storage().persistent().set(&stats_key, &stats);
-
-        // Track user's rewards
-        let user_rewards_key = (symbol_short!("user_rwd"), user.clone());
-        let mut user_rewards: soroban_sdk::Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&user_rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
-
-        user_rewards.push_back(reward_id);
-        env.storage().persistent().set(&user_rewards_key, &user_rewards);
+        // Store reward with optimized individual key
+        SocialRewardsStorage::set_reward(&env, &reward);
 
         // Emit reward added event
         EventEmitter::reward_added(&env, RewardAddedEvent {
@@ -259,14 +222,9 @@ impl SocialRewardsContract {
             return Err(RewardError::BatchSizeExceeded);
         }
 
-        // Verify caller is admin
-        let admin_key = symbol_short!("admin");
-        let stored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        // Verify caller is admin using optimized storage
+        let stored_admin = SocialRewardsStorage::get_admin(&env)
             .ok_or(RewardError::NotInitialized)?;
-
         if admin != stored_admin {
             return Err(RewardError::Unauthorized);
         }
@@ -276,26 +234,8 @@ impl SocialRewardsContract {
         let mut total_amount_granted = 0i128;
         let mut total_gas_saved = 0i128;
 
-        // Get current stats
-        let stats_key = symbol_short!("stats");
-        let mut stats: RewardStats = env
-            .storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(RewardStats {
-                total_rewards: 0,
-                total_amount: 0,
-                total_claimed: 0,
-                last_reward_id: 0,
-            });
-
-        // Get existing rewards
-        let rewards_key = symbol_short!("rewards");
-        let mut rewards: soroban_sdk::Map<u64, Reward> = env
-            .storage()
-            .persistent()
-            .get(&rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+        // Get current stats from optimized storage
+        let mut stats = SocialRewardsStorage::get_stats(&env);
 
         // Process each reward request
         for request in requests.iter() {
@@ -304,7 +244,6 @@ impl SocialRewardsContract {
                 &request,
                 &admin,
                 &mut stats,
-                &mut rewards,
             ) {
                 Ok(reward_id) => {
                     successful_rewards.push_back(reward_id);
@@ -326,9 +265,8 @@ impl SocialRewardsContract {
             failed_rewards.push_back(result);
         }
 
-        // Update storage
-        env.storage().persistent().set(&rewards_key, &rewards);
-        env.storage().persistent().set(&stats_key, &stats);
+        // Update stats in optimized storage
+        SocialRewardsStorage::set_stats(&env, &stats);
 
         Ok(BatchRewardOperation {
             successful_rewards,
@@ -343,8 +281,7 @@ impl SocialRewardsContract {
         env: &Env,
         request: &BatchRewardRequest,
         admin: &Address,
-        stats: &mut RewardStats,
-        rewards: &mut soroban_sdk::Map<u64, Reward>,
+        stats: &mut OptimizedRewardStats,
     ) -> Result<u64, RewardError> {
         // Validate amount
         if request.amount <= 0 {
@@ -356,7 +293,7 @@ impl SocialRewardsContract {
         let timestamp = env.ledger().timestamp();
 
         // Create reward record
-        let reward = Reward {
+        let reward = OptimizedReward {
             id: reward_id,
             user: request.user.clone(),
             amount: request.amount,
@@ -368,24 +305,13 @@ impl SocialRewardsContract {
             claimed_at: 0,
         };
 
-        // Store reward
-        rewards.set(reward_id, reward);
+        // Store reward with optimized storage
+        SocialRewardsStorage::set_reward(env, &reward);
 
         // Update stats
         stats.total_rewards += 1;
         stats.total_amount += request.amount;
         stats.last_reward_id = reward_id;
-
-        // Track user's rewards
-        let user_rewards_key = (symbol_short!("user_rwd"), request.user.clone());
-        let mut user_rewards: soroban_sdk::Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&user_rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
-
-        user_rewards.push_back(reward_id);
-        env.storage().persistent().set(&user_rewards_key, &user_rewards);
 
         // Emit reward added event
         EventEmitter::reward_added(env, RewardAddedEvent {
@@ -415,36 +341,13 @@ impl SocialRewardsContract {
 
         let mut results = soroban_sdk::Vec::new(&env);
 
-        // Get reward token once
-        let token_key = symbol_short!("token");
-        let token: Address = env
-            .storage()
-            .persistent()
-            .get(&token_key)
+        // Get reward token from optimized storage
+        let token = SocialRewardsStorage::get_token(&env)
             .ok_or(RewardError::NotInitialized)?;
-
         let token_client = soroban_sdk::token::Client::new(&env, &token);
 
-        // Get rewards once
-        let rewards_key = symbol_short!("rewards");
-        let mut rewards: soroban_sdk::Map<u64, Reward> = env
-            .storage()
-            .persistent()
-            .get(&rewards_key)
-            .ok_or(RewardError::RewardNotFound)?;
-
-        // Get stats once
-        let stats_key = symbol_short!("stats");
-        let mut stats: RewardStats = env
-            .storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(RewardStats {
-                total_rewards: 0,
-                total_amount: 0,
-                total_claimed: 0,
-                last_reward_id: 0,
-            });
+        // Get stats from optimized storage
+        let mut stats = SocialRewardsStorage::get_stats(&env);
 
         // Process each claim request
         for request in requests.iter() {
@@ -453,7 +356,6 @@ impl SocialRewardsContract {
             let result = match Self::process_single_reward_claim(
                 &env,
                 &request,
-                &mut rewards,
                 &mut stats,
                 &token_client,
             ) {
@@ -476,9 +378,8 @@ impl SocialRewardsContract {
             results.push_back(result);
         }
 
-        // Update storage
-        env.storage().persistent().set(&rewards_key, &rewards);
-        env.storage().persistent().set(&stats_key, &stats);
+        // Update stats in optimized storage
+        SocialRewardsStorage::set_stats(&env, &stats);
 
         Ok(results)
     }
@@ -487,12 +388,10 @@ impl SocialRewardsContract {
     fn process_single_reward_claim(
         env: &Env,
         request: &BatchRewardClaimRequest,
-        rewards: &mut soroban_sdk::Map<u64, Reward>,
-        stats: &mut RewardStats,
+        stats: &mut OptimizedRewardStats,
         token_client: &soroban_sdk::token::Client,
     ) -> Result<i128, RewardError> {
-        let mut reward = rewards
-            .get(request.reward_id)
+        let mut reward = SocialRewardsStorage::get_reward(env, request.reward_id)
             .ok_or(RewardError::RewardNotFound)?;
 
         // Verify user owns the reward
@@ -507,7 +406,6 @@ impl SocialRewardsContract {
 
         // Check contract balance
         let balance = token_client.balance(&env.current_contract_address());
-
         if balance < reward.amount {
             return Err(RewardError::InsufficientBalance);
         }
@@ -516,7 +414,7 @@ impl SocialRewardsContract {
         let timestamp = env.ledger().timestamp();
         reward.claimed = true;
         reward.claimed_at = timestamp;
-        rewards.set(request.reward_id, reward.clone());
+        SocialRewardsStorage::update_reward(env, &reward);
 
         // Update stats
         stats.total_claimed += reward.amount;
@@ -547,16 +445,8 @@ impl SocialRewardsContract {
     ) -> Result<i128, RewardError> {
         user.require_auth();
 
-        // Get reward
-        let rewards_key = symbol_short!("rewards");
-        let mut rewards: soroban_sdk::Map<u64, Reward> = env
-            .storage()
-            .persistent()
-            .get(&rewards_key)
-            .ok_or(RewardError::RewardNotFound)?;
-
-        let mut reward = rewards
-            .get(reward_id)
+        // Get reward from optimized storage
+        let mut reward = SocialRewardsStorage::get_reward(&env, reward_id)
             .ok_or(RewardError::RewardNotFound)?;
 
         // Verify user owns the reward
@@ -569,18 +459,13 @@ impl SocialRewardsContract {
             return Err(RewardError::AlreadyClaimed);
         }
 
-        // Get reward token
-        let token_key = symbol_short!("token");
-        let token: Address = env
-            .storage()
-            .persistent()
-            .get(&token_key)
+        // Get reward token from optimized storage
+        let token = SocialRewardsStorage::get_token(&env)
             .ok_or(RewardError::NotInitialized)?;
 
         // Check contract balance
         let token_client = soroban_sdk::token::Client::new(&env, &token);
         let balance = token_client.balance(&env.current_contract_address());
-
         if balance < reward.amount {
             return Err(RewardError::InsufficientBalance);
         }
@@ -589,24 +474,10 @@ impl SocialRewardsContract {
         let timestamp = env.ledger().timestamp();
         reward.claimed = true;
         reward.claimed_at = timestamp;
-        rewards.set(reward_id, reward.clone());
-        env.storage().persistent().set(&rewards_key, &rewards);
+        SocialRewardsStorage::update_reward(&env, &reward);
 
         // Update stats
-        let stats_key = symbol_short!("stats");
-        let mut stats: RewardStats = env
-            .storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(RewardStats {
-                total_rewards: 0,
-                total_amount: 0,
-                total_claimed: 0,
-                last_reward_id: 0,
-            });
-
-        stats.total_claimed += reward.amount;
-        env.storage().persistent().set(&stats_key, &stats);
+        SocialRewardsStorage::record_claim(&env, reward.amount);
 
         // Transfer tokens to user
         token_client.transfer(
@@ -627,88 +498,43 @@ impl SocialRewardsContract {
     }
 
     /// Get a reward by ID
-    pub fn get_reward(env: Env, reward_id: u64) -> Result<Reward, RewardError> {
-        let rewards_key = symbol_short!("rewards");
-        let rewards: soroban_sdk::Map<u64, Reward> = env
-            .storage()
-            .persistent()
-            .get(&rewards_key)
-            .ok_or(RewardError::RewardNotFound)?;
-
-        rewards
-            .get(reward_id)
+    pub fn get_reward(env: Env, reward_id: u64) -> Result<OptimizedReward, RewardError> {
+        SocialRewardsStorage::get_reward(&env, reward_id)
             .ok_or(RewardError::RewardNotFound)
     }
 
     /// Get all reward IDs for a user
     pub fn get_user_rewards(env: Env, user: Address) -> soroban_sdk::Vec<u64> {
-        let user_rewards_key = (symbol_short!("user_rwd"), user);
-        env.storage()
-            .persistent()
-            .get(&user_rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+        SocialRewardsStorage::get_user_reward_ids(&env, &user)
+    }
+    
+    /// Get all rewards for a user
+    pub fn get_user_reward_details(env: Env, user: Address) -> soroban_sdk::Vec<OptimizedReward> {
+        SocialRewardsStorage::get_user_rewards(&env, &user)
     }
 
     /// Get rewards statistics
-    pub fn get_stats(env: Env) -> RewardStats {
-        let stats_key = symbol_short!("stats");
-        env.storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(RewardStats {
-                total_rewards: 0,
-                total_amount: 0,
-                total_claimed: 0,
-                last_reward_id: 0,
-            })
+    pub fn get_stats(env: Env) -> OptimizedRewardStats {
+        SocialRewardsStorage::get_stats(&env)
     }
 
     /// Get contract info
     pub fn get_info(env: Env) -> Result<(Address, Address), RewardError> {
-        let admin_key = symbol_short!("admin");
-        let token_key = symbol_short!("token");
-
-        let admin = env
-            .storage()
-            .persistent()
-            .get(&admin_key)
+        let admin = SocialRewardsStorage::get_admin(&env)
             .ok_or(RewardError::NotInitialized)?;
-
-        let token = env
-            .storage()
-            .persistent()
-            .get(&token_key)
+        let token = SocialRewardsStorage::get_token(&env)
             .ok_or(RewardError::NotInitialized)?;
-
         Ok((admin, token))
     }
 
     /// Get pending (unclaimed) rewards total for a user
     pub fn get_pending_rewards(env: Env, user: Address) -> i128 {
-        let user_rewards_key = (symbol_short!("user_rwd"), user);
-        let user_reward_ids: soroban_sdk::Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&user_rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
-
-        let rewards_key = symbol_short!("rewards");
-        let rewards: soroban_sdk::Map<u64, Reward> = env
-            .storage()
-            .persistent()
-            .get(&rewards_key)
-            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
-
-        let mut total: i128 = 0;
-        for reward_id in user_reward_ids.iter() {
-            if let Some(reward) = rewards.get(reward_id) {
-                if !reward.claimed {
-                    total += reward.amount;
-                }
-            }
-        }
-
-        total
+        SocialRewardsStorage::get_pending_rewards_total(&env, &user)
+    }
+    
+    /// Get storage statistics for monitoring
+    pub fn get_storage_stats(env: Env) -> (u64, u64, u64) {
+        SocialRewardsStorage::get_storage_stats(&env)
     }
 }
 
