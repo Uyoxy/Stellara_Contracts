@@ -39,7 +39,8 @@ import { Tenant } from './tenancy/entities/tenant.entity';
 import { TenantConfig } from './tenancy/entities/tenant-config.entity';
 import { TenantUsage } from './tenancy/entities/tenant-usage.entity';
 import { TenantInvitation } from './tenancy/entities/tenant-invitation.entity';
-
+import { ApiVersioningModule } from './api-versioning/api-versioning.module';
+import { VersionMiddleware } from './api-versioning/version.middleware';
 
 @Module({
   imports: [
@@ -104,6 +105,7 @@ import { TenantInvitation } from './tenancy/entities/tenant-invitation.entity';
     GdprModule,
     ThrottleModule,
     TenantModule,
+    ApiVersioningModule,
   ],
 
   controllers: [AppController],
@@ -124,6 +126,8 @@ import { TenantInvitation } from './tenancy/entities/tenant-invitation.entity';
       provide: Logger,
       useClass: StructuredLogger,
     },
+    // Add version middleware globally
+    VersionMiddleware,
   ],
 })
 export class AppModule {}
