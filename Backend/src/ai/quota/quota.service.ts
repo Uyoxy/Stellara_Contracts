@@ -1,16 +1,23 @@
-import { Injectable } from '@nestjs/common';
-import { ForbiddenException } from '@nestjs/common';
-import dayjs from 'dayjs';
+import { Injectable, ForbiddenException } from '@nestjs/common';
 
+interface QuotaRecord {
+  requestCount: number;
+  tokenCount: number;
+}
 
 @Injectable()
 export class QuotaService {
   private readonly MAX_REQUESTS = 1000;
+  private quotas = new Map<string, QuotaRecord>();
 
-  async assertQuota(userId: string) {
-    const month = dayjs().format('YYYY-MM');
+  private getKey(userId: string): string {
+    const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+    return `${userId}:${month}`;
+  }
 
-    const quota = await this.repo.findOneBy({ userId, month });
+  async assertQuota(userId: string): Promise<void> {
+    const key = this.getKey(userId);
+    const quota = this.quotas.get(key);
 
     if (quota && quota.requestCount >= this.MAX_REQUESTS) {
       throw new ForbiddenException({
@@ -20,17 +27,13 @@ export class QuotaService {
     }
   }
 
-  async recordUsage(userId: string, tokens: number) {
-    const month = dayjs().format('YYYY-MM');
+  async recordUsage(userId: string, tokens: number): Promise<void> {
+    const key = this.getKey(userId);
+    const existing = this.quotas.get(key) || { requestCount: 0, tokenCount: 0 };
 
-    await this.repo.upsert(
-      {
-        userId,
-        month,
-        requestCount: () => 'request_count + 1',
-        tokenCount: () => `token_count + ${tokens}`,
-      },
-      ['userId', 'month'],
-    );
+    this.quotas.set(key, {
+      requestCount: existing.requestCount + 1,
+      tokenCount: existing.tokenCount + tokens,
+    });
   }
 }

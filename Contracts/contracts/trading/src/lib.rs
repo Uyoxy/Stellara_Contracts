@@ -1,18 +1,23 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, symbol_short, symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, symbol_short, Vec};
 use shared::fees::{FeeManager, FeeError};
 use shared::governance::{
-    GovernanceManager, GovernanceError, GovernanceRole, UpgradeProposal, ProposalStatus,
+    GovernanceManager, GovernanceRole, UpgradeProposal,
 };
+use shared::oracle::{OracleAggregate, fetch_aggregate_price, check_circuit_breaker};
+use shared::events::{EventEmitter, TradeExecutedEvent, FeeCollectedEvent};
+
+mod storage;
+use storage::{TradingStorage, OptimizedTradeStats, OptimizedOracleConfig, OptimizedOracleStatus, OptimizedTrade, TradingStorageMigration};
 
 /// Version of this contract implementation
-const CONTRACT_VERSION: u32 = 1;
+const CONTRACT_VERSION: u32 = 2;
 
 /// Trading contract with upgradeability and governance
 #[contract]
 pub struct UpgradeableTradingContract;
 
-/// Trade record for tracking
+/// Trade record for tracking (legacy - maintained for backward compatibility)
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Trade {
@@ -25,14 +30,45 @@ pub struct Trade {
     pub is_buy: bool,
 }
 
-/// Trading statistics
+// Re-export optimized types for backward compatibility
+pub type TradeStats = OptimizedTradeStats;
+pub type OracleConfig = OptimizedOracleConfig;
+pub type OracleStatus = OptimizedOracleStatus;
+
+/// Batch trade request
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct TradeStats {
-    pub total_trades: u64,
-    pub total_volume: i128,
-    pub last_trade_id: u64,
+pub struct BatchTradeRequest {
+    pub trader: Address,
+    pub pair: Symbol,
+    pub amount: i128,
+    pub price: i128,
+    pub is_buy: bool,
+    pub fee_token: Address,
+    pub fee_amount: i128,
+    pub fee_recipient: Address,
 }
+
+/// Batch trade result
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BatchTradeResult {
+    pub trade_id: Option<u64>,
+    pub success: bool,
+    pub error_code: Option<u32>,
+}
+
+/// Batch trade operation result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchTradeOperation {
+    pub successful_trades: soroban_sdk::Vec<u64>,
+    pub failed_trades: soroban_sdk::Vec<BatchTradeResult>,
+    pub total_fees_collected: i128,
+    pub gas_saved: i128, // Estimated gas savings
+}
+
+// Note: TradeStats, OracleConfig, OracleStatus are now re-exported from storage module
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -41,6 +77,36 @@ pub enum TradeError {
     InvalidAmount = 3002,
     ContractPaused = 3003,
     NotInitialized = 3004,
+    BatchSizeExceeded = 3005,
+    BatchOperationFailed = 3006,
+    OracleFailure = 3007,
+}
+
+impl From<TradeError> for soroban_sdk::Error {
+    fn from(error: TradeError) -> Self {
+        soroban_sdk::Error::from_contract_error(error as u32)
+    }
+}
+
+impl From<&TradeError> for soroban_sdk::Error {
+    fn from(error: &TradeError) -> Self {
+        soroban_sdk::Error::from_contract_error(*error as u32)
+    }
+}
+
+impl From<soroban_sdk::Error> for TradeError {
+    fn from(_error: soroban_sdk::Error) -> Self {
+        TradeError::Unauthorized
+    }
+}
+
+impl From<FeeError> for TradeError {
+    fn from(error: FeeError) -> Self {
+        match error {
+            FeeError::InsufficientBalance => TradeError::Unauthorized,
+            FeeError::InvalidAmount => TradeError::InvalidAmount,
+        }
+    }
 }
 
 #[contractimpl]
@@ -52,44 +118,77 @@ impl UpgradeableTradingContract {
         approvers: soroban_sdk::Vec<Address>,
         executor: Address,
     ) -> Result<(), TradeError> {
-        // Check if already initialized
-        let init_key = symbol_short!("init");
-        if env.storage().persistent().has(&init_key) {
+        // Check if already initialized using optimized storage
+        if TradingStorage::is_initialized(&env) {
             return Err(TradeError::Unauthorized);
         }
 
         // Set initialization flag
-        env.storage().persistent().set(&init_key, &true);
+        TradingStorage::set_initialized(&env);
 
-        // Store roles
-        let roles_key = symbol_short!("roles");
         let mut roles = soroban_sdk::Map::new(&env);
-
-        // Set admin role
-        roles.set(admin, GovernanceRole::Admin);
-
-        // Set approvers
+        roles.set(admin.clone(), GovernanceRole::Admin);
         for approver in approvers.iter() {
             roles.set(approver, GovernanceRole::Approver);
         }
+        roles.set(executor.clone(), GovernanceRole::Executor);
+        TradingStorage::set_roles(&env, &roles);
 
-        // Set executor
-        roles.set(executor, GovernanceRole::Executor);
-
+        let roles_key = symbol_short!("roles");
         env.storage().persistent().set(&roles_key, &roles);
 
-        // Initialize stats
-        let stats = TradeStats {
-            total_trades: 0,
-            total_volume: 0,
-            last_trade_id: 0,
-        };
-        let stats_key = symbol_short!("stats");
-        env.storage().persistent().set(&stats_key, &stats);
+        // Initialize stats in instance storage
+        TradingStorage::set_stats(&env, &OptimizedTradeStats::default());
 
         // Store contract version
-        let version_key = symbol_short!("ver");
-        env.storage().persistent().set(&version_key, &CONTRACT_VERSION);
+        TradingStorage::set_version(&env, CONTRACT_VERSION);
+
+        Ok(())
+    }
+    
+    /// Migrate storage from legacy format (admin only)
+    pub fn migrate_storage(env: Env, admin: Address) -> Result<u64, TradeError> {
+        admin.require_auth();
+        
+        // Verify admin role
+        if !Self::is_admin(&env, &admin) {
+            return Err(TradeError::Unauthorized);
+        }
+        
+        if !TradingStorageMigration::has_legacy_data(&env) {
+            return Ok(0);
+        }
+        
+        let migrated = TradingStorageMigration::migrate_from_legacy(&env);
+        TradingStorage::set_version(&env, CONTRACT_VERSION);
+        
+        Ok(migrated)
+    }
+
+    pub fn set_oracle_config(
+        env: Env,
+        admin: Address,
+        oracles: Vec<Address>,
+        max_staleness: u64,
+        min_sources: u32,
+    ) -> Result<(), TradeError> {
+        admin.require_auth();
+
+        // Verify admin role using optimized storage
+        let role = TradingStorage::get_role(&env, &admin)
+            .ok_or(TradeError::Unauthorized)?;
+
+        if role != GovernanceRole::Admin {
+            return Err(TradeError::Unauthorized);
+        }
+
+        // Store in instance storage (cheaper for config data)
+        let config = OptimizedOracleConfig {
+            oracles,
+            max_staleness,
+            min_sources,
+        };
+        TradingStorage::set_oracle_config(&env, &config);
 
         Ok(())
     }
@@ -108,37 +207,19 @@ impl UpgradeableTradingContract {
     ) -> Result<u64, FeeError> {
         trader.require_auth();
 
-        // Verify not paused
-        let paused_key = symbol_short!("pause");
-        let is_paused: bool = env
-            .storage()
-            .persistent()
-            .get(&paused_key)
-            .unwrap_or(false);
-
-        if is_paused {
-            env.panic_with_error(symbol_short!("PAUSED"));
+        // Verify not paused using optimized storage
+        if TradingStorage::is_paused(&env) {
+            panic!("PAUSED");
         }
 
         // Collect fee first
         FeeManager::collect_fee(&env, &fee_token, &trader, &fee_recipient, fee_amount)?;
 
-        // Create trade record
-        let stats_key = symbol_short!("stats");
-        let mut stats: TradeStats = env
-            .storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(TradeStats {
-                total_trades: 0,
-                total_volume: 0,
-                last_trade_id: 0,
-            });
-
-        let trade_id = stats.last_trade_id + 1;
-        let trade = Trade {
+        // Create trade record with optimized storage
+        let trade_id = TradingStorage::increment_trade_stats(&env, amount);
+        let trade = OptimizedTrade {
             id: trade_id,
-            trader,
+            trader: trader.clone(),
             pair,
             amount,
             price,
@@ -146,72 +227,228 @@ impl UpgradeableTradingContract {
             is_buy,
         };
 
+        // Store trade with optimized individual key
+        TradingStorage::set_trade(&env, &trade);
+
+        Ok(trade_id)
+    }
+
+    /// Execute multiple trades in a single transaction
+    pub fn batch_trade(
+        env: Env,
+        requests: soroban_sdk::Vec<BatchTradeRequest>,
+    ) -> Result<BatchTradeOperation, TradeError> {
+        // Maximum batch size to prevent resource exhaustion
+        const MAX_BATCH_SIZE: u32 = 50;
+        
+        if requests.len() > MAX_BATCH_SIZE {
+            return Err(TradeError::BatchSizeExceeded);
+        }
+
+        // Verify not paused using optimized storage
+        if TradingStorage::is_paused(&env) {
+            return Err(TradeError::ContractPaused);
+        }
+
+        let mut successful_trades = soroban_sdk::Vec::new(&env);
+        let mut failed_trades = soroban_sdk::Vec::new(&env);
+        let mut total_fees_collected = 0i128;
+        let mut total_gas_saved = 0i128;
+
+        // Get current stats from optimized storage
+        let mut stats = TradingStorage::get_stats(&env);
+
+        // Process each trade request
+        for (index, request) in requests.iter().enumerate() {
+            // Authenticate the trader
+            request.trader.require_auth();
+
+            let result = match Self::process_single_trade(
+                &env,
+                &request,
+                &mut stats,
+                index as u32,
+            ) {
+                Ok(trade_id) => {
+                    successful_trades.push_back(trade_id);
+                    total_fees_collected += request.fee_amount;
+                    total_gas_saved += 1000i128; // Estimated gas savings per trade
+                    BatchTradeResult {
+                        trade_id: Some(trade_id),
+                        success: true,
+                        error_code: None,
+                    }
+                }
+                Err(error) => BatchTradeResult {
+                    trade_id: None,
+                    success: false,
+                    error_code: Some(error as u32),
+                },
+            };
+
+            failed_trades.push_back(result);
+        }
+
+        // Update stats in optimized storage
+        TradingStorage::set_stats(&env, &stats);
+
+        Ok(BatchTradeOperation {
+            successful_trades,
+            failed_trades,
+            total_fees_collected,
+            gas_saved: total_gas_saved,
+        })
+    }
+
+    /// Process a single trade within a batch operation
+    fn process_single_trade(
+        env: &Env,
+        request: &BatchTradeRequest,
+        stats: &mut OptimizedTradeStats,
+        _batch_index: u32,
+    ) -> Result<u64, TradeError> {
+        // Validate amount
+        if request.amount <= 0 {
+            return Err(TradeError::InvalidAmount);
+        }
+
+        // Collect fee first
+        FeeManager::collect_fee(
+            env,
+            &request.fee_token,
+            &request.trader,
+            &request.fee_recipient,
+            request.fee_amount,
+        )?;
+
+        // Emit fee collected event
+        EventEmitter::fee_collected(env, FeeCollectedEvent {
+            payer: request.trader.clone(),
+            recipient: request.fee_recipient.clone(),
+            amount: request.fee_amount,
+            token: request.fee_token.clone(),
+            timestamp: env.ledger().timestamp(),
+        });
+
+        // Create trade record with optimized storage
+        let trade_id = stats.last_trade_id + 1;
+        let timestamp = env.ledger().timestamp();
+        let trade = OptimizedTrade {
+            id: trade_id,
+            trader: request.trader.clone(),
+            pair: request.pair.clone(),
+            amount: request.amount,
+            price: request.price,
+            timestamp,
+            is_buy: request.is_buy,
+        };
+
         // Update stats
         stats.total_trades += 1;
-        stats.total_volume += amount;
+        stats.total_volume += request.amount;
         stats.last_trade_id = trade_id;
 
-        // Store trade
-        let trades_key = symbol_short!("trades");
-        let mut trades: soroban_sdk::Vec<Trade> = env
-            .storage()
-            .persistent()
-            .get(&trades_key)
-            .unwrap_or_else(|_| soroban_sdk::Vec::new(&env));
+        // Store trade with optimized individual key
+        TradingStorage::set_trade(env, &trade);
 
-        trades.push_back(trade);
-
-        // Update persistent storage
-        env.storage().persistent().set(&trades_key, &trades);
-        env.storage().persistent().set(&stats_key, &stats);
+        // Emit trade executed event with batch index
+        EventEmitter::trade_executed(env, TradeExecutedEvent {
+            trade_id,
+            trader: request.trader.clone(),
+            pair: request.pair.clone(),
+            amount: request.amount,
+            price: request.price,
+            is_buy: request.is_buy,
+            fee_amount: request.fee_amount,
+            fee_token: request.fee_token.clone(),
+            timestamp,
+        });
 
         Ok(trade_id)
     }
 
     /// Get current contract version
     pub fn get_version(env: Env) -> u32 {
-        let version_key = symbol_short!("ver");
-        env.storage()
-            .persistent()
-            .get(&version_key)
-            .unwrap_or(0)
+        TradingStorage::get_version(&env)
     }
 
     /// Get trading statistics
-    pub fn get_stats(env: Env) -> TradeStats {
-        let stats_key = symbol_short!("stats");
-        env.storage()
-            .persistent()
-            .get(&stats_key)
-            .unwrap_or(TradeStats {
-                total_trades: 0,
-                total_volume: 0,
-                last_trade_id: 0,
-            })
+    pub fn get_stats(env: Env) -> OptimizedTradeStats {
+        TradingStorage::get_stats(&env)
+    }
+    
+    /// Get trade by ID
+    pub fn get_trade(env: Env, trade_id: u64) -> Option<OptimizedTrade> {
+        TradingStorage::get_trade(&env, trade_id)
+    }
+    
+    /// Get trades by trader
+    pub fn get_trades_by_trader(env: Env, trader: Address) -> soroban_sdk::Vec<OptimizedTrade> {
+        TradingStorage::get_trader_trades(&env, &trader)
+    }
+
+    pub fn refresh_oracle_price(env: Env, pair: Symbol) -> Result<OracleAggregate, TradeError> {
+        let config = TradingStorage::get_oracle_config(&env)
+            .ok_or(TradeError::NotInitialized)?;
+
+        let aggregate =
+            fetch_aggregate_price(&env, &config.oracles, &pair, config.max_staleness, config.min_sources)
+                .map_err(|_| TradeError::OracleFailure)?;
+
+        let mut status = TradingStorage::get_oracle_status(&env);
+        
+        // Circuit Breaker: Check for extreme volatility (20% threshold)
+        if status.last_price > 0 {
+            if !check_circuit_breaker(status.last_price, aggregate.median_price, 20) {
+                Self::record_oracle_failure(env.clone(), pair.clone());
+                return Err(TradeError::OracleFailure);
+            }
+        }
+
+        status.last_pair = aggregate.pair.clone();
+        status.last_price = aggregate.median_price;
+        status.last_updated_at = env.ledger().timestamp();
+        status.last_source_count = aggregate.source_count;
+        status.consecutive_failures = 0;
+
+        TradingStorage::set_oracle_status(&env, &status);
+
+        env.events().publish(
+            (symbol_short!("orc_upd"),),
+            (aggregate.pair.clone(), aggregate.median_price, aggregate.source_count),
+        );
+
+        Ok(aggregate)
+    }
+
+    pub fn record_oracle_failure(env: Env, _pair: Symbol) {
+        let mut status = TradingStorage::get_oracle_status(&env);
+        status.consecutive_failures += 1;
+        TradingStorage::set_oracle_status(&env, &status);
+
+        env.events().publish(
+            (symbol_short!("orc_fail"),),
+            status.consecutive_failures,
+        );
+    }
+
+    pub fn get_oracle_status(env: Env) -> OptimizedOracleStatus {
+        TradingStorage::get_oracle_status(&env)
     }
 
     /// Pause the contract (admin only)
     pub fn pause(env: Env, admin: Address) -> Result<(), TradeError> {
         admin.require_auth();
 
-        // Verify admin role
-        let roles_key = symbol_short!("roles");
-        let roles: soroban_sdk::Map<Address, GovernanceRole> = env
-            .storage()
-            .persistent()
-            .get(&roles_key)
-            .ok_or(TradeError::Unauthorized)?;
-
-        let role = roles
-            .get(admin)
+        // Verify admin role using optimized storage
+        let role = TradingStorage::get_role(&env, &admin)
             .ok_or(TradeError::Unauthorized)?;
 
         if role != GovernanceRole::Admin {
             return Err(TradeError::Unauthorized);
         }
 
-        let paused_key = symbol_short!("pause");
-        env.storage().persistent().set(&paused_key, &true);
+        TradingStorage::set_paused(&env, true);
 
         Ok(())
     }
@@ -220,25 +457,35 @@ impl UpgradeableTradingContract {
     pub fn unpause(env: Env, admin: Address) -> Result<(), TradeError> {
         admin.require_auth();
 
-        let roles_key = symbol_short!("roles");
-        let roles: soroban_sdk::Map<Address, GovernanceRole> = env
-            .storage()
-            .persistent()
-            .get(&roles_key)
-            .ok_or(TradeError::Unauthorized)?;
-
-        let role = roles
-            .get(admin)
+        let role = TradingStorage::get_role(&env, &admin)
             .ok_or(TradeError::Unauthorized)?;
 
         if role != GovernanceRole::Admin {
             return Err(TradeError::Unauthorized);
         }
 
-        let paused_key = symbol_short!("pause");
-        env.storage().persistent().set(&paused_key, &false);
+        TradingStorage::set_paused(&env, false);
 
         Ok(())
+    }
+
+    pub fn pause_upgrade_governance(env: Env, admin: Address) -> Result<(), TradeError> {
+        admin.require_auth();
+
+        GovernanceManager::pause_governance(&env, admin)
+            .map_err(|_| TradeError::Unauthorized)
+    }
+
+    pub fn resume_upgrade_governance(env: Env, admin: Address) -> Result<(), TradeError> {
+        admin.require_auth();
+
+        GovernanceManager::resume_governance(&env, admin)
+            .map_err(|_| TradeError::Unauthorized)
+    }
+
+    /// Helper: Check if address is admin
+    fn is_admin(env: &Env, address: &Address) -> bool {
+        TradingStorage::get_role(env, address) == Some(GovernanceRole::Admin)
     }
 
     /// Propose an upgrade via governance

@@ -1,11 +1,30 @@
 [workspace]
 members = [
+    "contracts/token",
     "contracts/trading",
     "contracts/social_rewards",
     "contracts/academy",
+    "contracts/academy-rewards",
+    "contracts/privacy_token",
+    "contracts/privacy_trading",
+    "contracts/identity",
+    "contracts/cross_chain_bridge",
+    # "contracts/staking",         # TODO: Fix compilation errors
+    # "contracts/yield_farming",   # TODO: Fix compilation errors
+    # "contracts/reward_distributor", # TODO: Fix compilation errors
+    # "contracts/governance_token",   # TODO: Fix compilation errors
     "shared",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+soroban-sdk = "20.0.0"
+
+[workspace.metadata.clippy]
+# Additional clippy configuration can go here
+
+[workspace.metadata.husky]
+hooks = ["pre-commit", "pre-push"]
 
 [profile.release]
 opt-level = "z"

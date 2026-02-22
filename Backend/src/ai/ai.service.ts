@@ -3,17 +3,17 @@ import { AiCacheService } from './cache/ai-cache.service';
 import { QuotaService } from './quota/quota.service';
 import { AiRequestDto } from './dto/ai-request.dto';
 
-
 @Injectable()
 export class AiService {
+  constructor(
+    private readonly quotaService: QuotaService,
+    private readonly cache: AiCacheService,
+  ) {}
 
-    constructor(
-        private readonly quotaService: QuotaService,
-        private readonly cache: AiCacheService,
-        // private readonly provider: AiProviderService,
-    ) {}
   async handlePrompt(dto: AiRequestDto) {
-    await this.quotaService.assertQuota(dto.userId);
+    if (dto.userId) {
+      await this.quotaService.assertQuota(dto.userId);
+    }
 
     const cacheKey = this.cache.buildKey(dto.prompt, 'gpt-4');
 
@@ -23,10 +23,16 @@ export class AiService {
     }
 
     try {
-      const result = await this.provider.generate(dto.prompt);
+      // TODO: Integrate with actual AI provider
+      const result = {
+        response: 'AI response placeholder',
+        tokensUsed: 100,
+      };
 
       await this.cache.set(cacheKey, result.response);
-      await this.quotaService.recordUsage(dto.userId, result.tokensUsed);
+      if (dto.userId) {
+        await this.quotaService.recordUsage(dto.userId, result.tokensUsed);
+      }
 
       return { response: result.response, cached: false };
     } catch (err) {

@@ -3,7 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InjectQueue } from '@nestjs/bull';
-import { Queue } from 'bull';
+import type { Queue } from 'bull';
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -22,12 +22,15 @@ export class VoiceService {
     return crypto.createHash('sha256').update(content).digest('hex');
   }
 
-  async processSTT(file: Express.Multer.File): Promise<string> {
-    const contentHash = this.generateHash(file.buffer);
+  async processSTT(file: {
+    buffer: Buffer;
+    originalname: string;
+  }): Promise<string> {
+    const audioHash = this.generateHash(file.buffer);
 
     // Check for duplicate
     const existingJob = await this.voiceJobRepository.findOne({
-      where: { contentHash, type: JobType.STT, status: JobStatus.COMPLETED },
+      where: { audioHash, type: JobType.STT, status: JobStatus.COMPLETED },
     });
 
     if (existingJob) {
@@ -45,7 +48,7 @@ export class VoiceService {
     const job = this.voiceJobRepository.create({
       type: JobType.STT,
       audioUrl: filePath,
-      contentHash,
+      audioHash,
       status: JobStatus.PENDING,
     });
 
@@ -58,11 +61,11 @@ export class VoiceService {
   }
 
   async processTTS(text: string): Promise<string> {
-    const contentHash = this.generateHash(text);
+    const audioHash = this.generateHash(text);
 
     // Check for duplicate
     const existingJob = await this.voiceJobRepository.findOne({
-      where: { contentHash, type: JobType.TTS, status: JobStatus.COMPLETED },
+      where: { audioHash, type: JobType.TTS, status: JobStatus.COMPLETED },
     });
 
     if (existingJob) {
@@ -72,8 +75,8 @@ export class VoiceService {
     // Create job
     const job = this.voiceJobRepository.create({
       type: JobType.TTS,
-      text,
-      contentHash,
+      inputText: text,
+      audioHash,
       status: JobStatus.PENDING,
     });
 
@@ -95,9 +98,9 @@ export class VoiceService {
       id: job.id,
       type: job.type,
       status: job.status,
-      text: job.text,
+      text: job.inputText || job.transcribedText,
       audioUrl: job.audioUrl,
-      resultAudioUrl: job.resultAudioUrl,
+      resultAudioUrl: job.generatedAudioUrl,
       errorMessage: job.errorMessage,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
@@ -120,8 +123,8 @@ export class VoiceService {
     return {
       status: job.status,
       type: job.type,
-      text: job.text,
-      resultAudioUrl: job.resultAudioUrl,
+      text: job.inputText || job.transcribedText,
+      resultAudioUrl: job.generatedAudioUrl,
     };
   }
 

@@ -1,5 +1,5 @@
 import { Processor, Process } from '@nestjs/bull';
-import { Job } from 'bull';
+import type { Job } from 'bull';
 import { Logger } from '@nestjs/common';
 import { JobResult } from '../types/job.types';
 
@@ -28,7 +28,9 @@ export class DeployContractProcessor {
 
       // Validate contract data
       if (!contractName || !contractCode || !network) {
-        throw new Error('Missing required fields: contractName, contractCode, network');
+        throw new Error(
+          'Missing required fields: contractName, contractCode, network',
+        );
       }
 
       this.logger.debug(`Deploying contract ${contractName}...`);
@@ -71,7 +73,10 @@ export class DeployContractProcessor {
         },
       };
     } catch (error) {
-      this.logger.error(`Failed to deploy contract: ${error.message}`, error.stack);
+      this.logger.error(
+        `Failed to deploy contract: ${error.message}`,
+        error.stack,
+      );
       throw error;
     }
   }

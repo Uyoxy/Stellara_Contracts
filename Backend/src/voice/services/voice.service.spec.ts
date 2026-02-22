@@ -1,9 +1,8 @@
-// src/voice/voice.service.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { getQueueToken } from '@nestjs/bull';
 import { VoiceService } from './voice.service';
-import { VoiceJob, JobStatus, JobType } from './entities/voice-job.entity';
+import { VoiceJob, JobStatus, JobType } from '../entities/voice-job.entity';
 
 describe('VoiceService', () => {
   let service: VoiceService;
@@ -38,7 +37,7 @@ describe('VoiceService', () => {
       const mockFile = {
         originalname: 'test.mp3',
         buffer: Buffer.from('test'),
-      } as Express.Multer.File;
+      } as any;
 
       const mockJob = { id: 'job-123', type: JobType.STT };
       mockRepository.findOne.mockResolvedValue(null);
@@ -48,14 +47,16 @@ describe('VoiceService', () => {
       const jobId = await service.processSTT(mockFile);
 
       expect(jobId).toBe('job-123');
-      expect(mockQueue.add).toHaveBeenCalledWith('process-stt', { jobId: 'job-123' });
+      expect(mockQueue.add).toHaveBeenCalledWith('process-stt', {
+        jobId: 'job-123',
+      });
     });
 
     it('should return existing job if duplicate detected', async () => {
       const mockFile = {
         originalname: 'test.mp3',
         buffer: Buffer.from('test'),
-      } as Express.Multer.File;
+      } as any;
 
       const existingJob = { id: 'existing-123', status: JobStatus.COMPLETED };
       mockRepository.findOne.mockResolvedValue(existingJob);

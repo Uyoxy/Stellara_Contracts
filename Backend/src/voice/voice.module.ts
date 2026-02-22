@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bull';
 import { VoiceGateway } from './voice.gateway';
 import { VoiceSessionService } from './services/voice-session.service';
 import { ConversationStateMachineService } from './services/conversation-state-machine.service';
@@ -11,11 +13,13 @@ import { RedisModule } from '../redis/redis.module';
 import { VoiceJob } from './entities/voice-job.entity';
 
 @Module({
-  imports: [RedisModule, TypeOrmModule.forFeature([VoiceJob]),
-  BullModule.registerQueue({
-    name: 'voice-processing',
-  }),
-],
+  imports: [
+    RedisModule,
+    TypeOrmModule.forFeature([VoiceJob]),
+    BullModule.registerQueue({
+      name: 'voice-processing',
+    }),
+  ],
   providers: [
     VoiceGateway,
     VoiceSessionService,

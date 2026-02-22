@@ -1,6 +1,6 @@
 //! Shared utilities and types for Stellara contracts
 
-use soroban_sdk::contracttype;
+use soroban_sdk::{contracttype, String};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -10,8 +10,12 @@ pub struct ContractConfig {
     pub is_paused: bool,
 }
 
+pub mod events;
 pub mod fees;
 pub mod governance;
+pub mod oracle;
+pub mod privacy;
+pub mod storage;
 
 /// Standard contract error codes
 pub mod errors {

@@ -114,7 +114,8 @@ export class WebSocketTracingAdapter {
     if (!traceContext) {
       return {};
     }
-    return this.tracingService.injectTraceContext(traceContext);
+    const headers = this.tracingService.injectTraceContext(traceContext);
+    return headers as unknown as Record<string, string>;
   }
 
   /**

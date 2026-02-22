@@ -1,4 +1,11 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, Index } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+  Index,
+} from 'typeorm';
 
 export enum JobStatus {
   PENDING = 'pending',
@@ -19,10 +26,10 @@ export class VoiceJob {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'enum', enum: JobType })
+  @Column({ type: 'varchar', default: JobType.STT })
   type: JobType;
 
-  @Column({ type: 'enum', enum: JobStatus, default: JobStatus.PENDING })
+  @Column({ type: 'varchar', default: JobStatus.PENDING })
   status: JobStatus;
 
   @Column({ nullable: true })
@@ -57,7 +64,7 @@ export class VoiceJob {
   maxRetries: number;
 
   // Metadata
-  @Column({ type: 'jsonb', nullable: true })
+  @Column({ type: 'text', nullable: true })
   metadata: Record<string, any>;
 
   @CreateDateColumn()
@@ -66,6 +73,6 @@ export class VoiceJob {
   @UpdateDateColumn()
   updatedAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'datetime', nullable: true })
   completedAt: Date;
 }

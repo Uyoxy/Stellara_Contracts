@@ -1,7 +1,7 @@
-import { Injectable, TooManyRequestsException } from '@nestjs/common';
-import { RATE_LIMITS, BAN_RULES } from './throttle.constants';
-import { buildRateKey, buildBanKey } from './throttle.util';
-import { RedisService } from 'src/redis/redis.service';
+import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
+import { BAN_RULES } from './throttle.constants';
+import { buildBanKey } from './throttle.util';
+import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class ThrottleService {
@@ -22,7 +22,10 @@ export class ThrottleService {
   async checkBan(identifier: string) {
     const banned = await this.redis.client.get(buildBanKey(identifier));
     if (banned) {
-      throw new TooManyRequestsException('Temporarily banned');
+      throw new HttpException(
+        'Temporarily banned',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
   }
 
@@ -38,12 +41,7 @@ export class ThrottleService {
       const banSeconds =
         BAN_RULES.BASE_BAN_SECONDS * Math.pow(2, violations - 1);
 
-      await this.redis.client.set(
-        buildBanKey(identifier),
-        '1',
-        'EX',
-        banSeconds,
-      );
+      await this.redis.client.setEx(buildBanKey(identifier), banSeconds, '1');
     }
   }
 }

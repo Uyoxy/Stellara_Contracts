@@ -28,9 +28,14 @@ next-env.d.ts
 
 # Rust
 /target/
+**/target/
 Cargo.lock
+!Cargo.lock
 **/*.rs.bk
 *.pdb
+**/*.dSYM/
+**/test_snapshots/
+.cargo/
 
 # Soroban
 *.wasm

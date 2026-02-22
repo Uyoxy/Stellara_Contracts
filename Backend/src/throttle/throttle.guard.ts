@@ -2,7 +2,8 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
-  TooManyRequestsException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { ThrottleService } from './throttle.service';
 import { RATE_LIMITS } from './throttle.constants';
@@ -26,12 +27,11 @@ export class ThrottleGuard implements CanActivate {
 
     const key = `rate:${req.path}:${identifier}`;
 
-    const { current, limit, ttl } =
-      await this.throttle.checkRateLimit(
-        key,
-        config.limit,
-        config.window,
-      );
+    const { current, limit, ttl } = await this.throttle.checkRateLimit(
+      key,
+      config.limit,
+      config.window,
+    );
 
     res.setHeader('X-RateLimit-Limit', limit);
     res.setHeader('X-RateLimit-Remaining', Math.max(0, limit - current));
@@ -39,7 +39,10 @@ export class ThrottleGuard implements CanActivate {
 
     if (current > limit) {
       await this.throttle.registerViolation(identifier);
-      throw new TooManyRequestsException('Rate limit exceeded');
+      throw new HttpException(
+        'Rate limit exceeded',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     return true;
