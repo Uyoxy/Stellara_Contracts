@@ -1,3 +1,7 @@
+﻿version: '3.8'
+
+services:
+  db:
 ﻿# =============================================================================
 # Stellara Backend - Docker Compose Configuration
 # =============================================================================
@@ -128,9 +132,28 @@ services:
     profiles:
       - tools
 
+  api-gateway:
+    image: kong:latest
+    container_name: stellara_gateway
+    ports:
+      - "8000:8000"   # HTTP traffic
+      - "8443:8443"   # HTTPS traffic
+      - "8001:8001"   # Admin API
+    environment:
+      KONG_DATABASE: "off"   # use declarative config
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+    volumes:
+      - ./kong.yml:/etc/kong/kong.yml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 # -----------------------------------------------------------------------------
 # Volumes
 # -----------------------------------------------------------------------------
+
 volumes:
   postgres-data:
     driver: local
