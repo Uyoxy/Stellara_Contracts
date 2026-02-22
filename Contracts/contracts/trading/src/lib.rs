@@ -4,7 +4,7 @@ use shared::fees::{FeeManager, FeeError};
 use shared::governance::{
     GovernanceManager, GovernanceRole, UpgradeProposal,
 };
-use shared::oracle::{OracleAggregate, fetch_aggregate_price};
+use shared::oracle::{OracleAggregate, fetch_aggregate_price, check_circuit_breaker};
 use shared::events::{EventEmitter, TradeExecutedEvent, FeeCollectedEvent};
 
 mod storage;
@@ -396,6 +396,15 @@ impl UpgradeableTradingContract {
                 .map_err(|_| TradeError::OracleFailure)?;
 
         let mut status = TradingStorage::get_oracle_status(&env);
+        
+        // Circuit Breaker: Check for extreme volatility (20% threshold)
+        if status.last_price > 0 {
+            if !check_circuit_breaker(status.last_price, aggregate.median_price, 20) {
+                Self::record_oracle_failure(env.clone(), pair.clone());
+                return Err(TradeError::OracleFailure);
+            }
+        }
+
         status.last_pair = aggregate.pair.clone();
         status.last_price = aggregate.median_price;
         status.last_updated_at = env.ledger().timestamp();
