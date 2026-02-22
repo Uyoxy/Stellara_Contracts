@@ -1,9 +1,10 @@
-﻿services:
+﻿version: '3.8'
+
+services:
   db:
     image: postgres:15-alpine
     container_name: stellara_db
     environment:
-      # Use .env file or environment variables instead of plaintext
       POSTGRES_USER: ${DB_USERNAME:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
       POSTGRES_DB: ${DB_DATABASE:-stellara_db}
@@ -47,6 +48,24 @@
       timeout: 5s
       retries: 5
     command: server -dev
+
+  api-gateway:
+    image: kong:latest
+    container_name: stellara_gateway
+    ports:
+      - "8000:8000"   # HTTP traffic
+      - "8443:8443"   # HTTPS traffic
+      - "8001:8001"   # Admin API
+    environment:
+      KONG_DATABASE: "off"   # use declarative config
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+    volumes:
+      - ./kong.yml:/etc/kong/kong.yml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
