@@ -37,7 +37,7 @@ pub fn compute_commitment(
     ledger: u32,
 ) -> BytesN<32> {
     let payload = compute_payload(env, contract, key, subject, ledger);
-    env.crypto().sha256(&payload)
+    env.crypto().sha256(&payload).into()
 }
 
 fn trust_key() -> Symbol {
@@ -84,11 +84,11 @@ pub fn verify_with_contract(env: &Env, contract: &Address, key: &Symbol, subject
     let mut args = Vec::new(env);
     args.push_back(key.clone().into_val(env));
     args.push_back(*subject);
-    let res = env.try_invoke_contract::<BytesN<32>, Error>(contract, &f, args);
-    match res {
-        Ok(Ok(remote_digest)) => {
-            let digest = compute_commitment(env, contract, key, subject, env.ledger().sequence());
-            remote_digest == digest
+    
+    match env.try_invoke_contract::<BytesN<32>, Error>(contract, &f, args) {
+        Ok(Ok(commitment)) => {
+            let expected = compute_commitment(env, contract, key, subject, env.ledger().sequence());
+            commitment == expected
         }
         _ => false,
     }

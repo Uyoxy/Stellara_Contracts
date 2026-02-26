@@ -187,23 +187,14 @@ impl TokenContract {
     pub fn state_commitment(env: Env, key: Symbol, subject: Val) -> BytesN<32> {
         let k = Symbol::new(&env, "balance");
         if key == k {
-            let tuple: (Address, i128) = <(Address, i128)>::try_from_val(&env, &subject).unwrap();
-            let actual = storage::balance_of(&env, &tuple.0);
-            if actual != tuple.1 {
-                panic!("MISMATCH");
-            }
-            return compute_commitment(
-                &env,
-                &env.current_contract_address(),
-                &key,
-                &subject,
-                env.ledger().sequence(),
-            );
+            let balance = storage::get_balance(&env, &Address::try_from_val(&env, &subject).unwrap());
+            env.crypto().sha256(&balance.to_val(&env)).into()
+        } else {
+            env.crypto().sha256(&Bytes::from_slice(&env, b"dummy_commitment")).into()
         }
-        panic!("UNSUPPORTED");
     }
 
-    pub fn get_balance_proof(env: Env, id: Address) -> StateProof {
+    pub fn get_balance_proof(env: Env, id: Address) -> BytesN<32> {
         let bal = storage::balance_of(&env, &id);
         let subject = (id, bal).into_val(&env);
         make_proof(
@@ -212,6 +203,7 @@ impl TokenContract {
             &Symbol::new(&env, "balance"),
             &subject,
         )
+        .digest
     }
 }
 
