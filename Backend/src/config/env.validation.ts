@@ -53,8 +53,16 @@ class EnvironmentVariables {
   @IsString()
   JWT_SECRET: string;
 
-  @IsNumber()
-  JWT_EXPIRATION: number;
+  @IsString()
+  JWT_EXPIRATION: string;
+
+  @IsOptional()
+  @IsString()
+  JWT_REFRESH_SECRET?: string;
+
+  @IsOptional()
+  @IsString()
+  JWT_REFRESH_EXPIRATION?: string;
 
   @IsString()
   STELLAR_NETWORK: string;
@@ -97,6 +105,110 @@ class EnvironmentVariables {
   @IsOptional()
   @IsBoolean()
   LOG_INCLUDE_CONTEXT?: boolean;
+
+  @IsOptional()
+  @IsString()
+  SESSION_TTL_SECONDS?: string;
+
+  @IsOptional()
+  @IsString()
+  RATE_LIMIT_QUEUE_TIMEOUT_MS?: string;
+
+  @IsOptional()
+  @IsString()
+  RATE_LIMIT_BUCKET_TTL_MS?: string;
+
+  @IsOptional()
+  @IsString()
+  RATE_LIMIT_QUEUE_CONCURRENCY?: string;
+
+  @IsOptional()
+  @IsString()
+  RATE_LIMIT_BURST_MULTIPLIER?: string;
+
+  @IsOptional()
+  @IsString()
+  SHUTDOWN_DRAIN_TIMEOUT_MS?: string;
+
+  @IsOptional()
+  @IsString()
+  INDEX_ANALYSIS_REPORT_DIR?: string;
+
+  @IsOptional()
+  @IsString()
+  INDEX_ANALYSIS_MIGRATIONS_DIR?: string;
+  // AWS S3 Backup Configuration
+  @IsOptional()
+  @IsString()
+  AWS_REGION?: string;
+
+  @IsOptional()
+  @IsString()
+  AWS_ACCESS_KEY_ID?: string;
+
+  @IsOptional()
+  @IsString()
+  AWS_SECRET_ACCESS_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  S3_BACKUP_BUCKET?: string;
+
+  @IsOptional()
+  @IsString()
+  S3_BACKUP_PREFIX?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  WAL_ARCHIVE_ENABLED?: boolean;
+
+  @IsOptional()
+  @IsString()
+  WAL_ARCHIVE_BUCKET?: string;
+
+  @IsOptional()
+  @IsString()
+  WAL_ARCHIVE_PREFIX?: string;
+
+  @IsOptional()
+  @IsNumber()
+  BACKUP_RETENTION_DAYS?: number;
+
+  @IsOptional()
+  @IsNumber()
+  BACKUP_RETENTION_WEEKS?: number;
+
+  @IsOptional()
+  @IsNumber()
+  BACKUP_RETENTION_MONTHS?: number;
+
+  @IsOptional()
+  @IsString()
+  BACKUP_SCHEDULE?: string;
+
+  @IsOptional()
+  @IsString()
+  BACKUP_ENCRYPTION_KEY_ID?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  BACKUP_VERIFY_AFTER_UPLOAD?: boolean;
+
+  @IsOptional()
+  @IsString()
+  BACKUP_VERIFY_SCHEDULE?: string;
+
+  @IsOptional()
+  @IsNumber()
+  DR_RESTORE_TARGET_RTO_MINUTES?: number;
+
+  @IsOptional()
+  @IsNumber()
+  DR_RESTORE_TARGET_RPO_MINUTES?: number;
+
+  @IsOptional()
+  @IsString()
+  DR_TEST_SCHEDULE?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {
