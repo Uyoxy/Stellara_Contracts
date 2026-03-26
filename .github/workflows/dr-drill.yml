@@ -59,21 +59,21 @@ jobs:
               title: `DR Drill: ${drillId}`,
               body: `## Disaster Recovery Drill
               
-**Drill ID:** ${drillId}
-**Environment:** ${environment}
-**Type:** ${drillType}
-**Started:** ${new Date().toISOString()}
+              **Drill ID:** ${drillId}
+              **Environment:** ${environment}
+              **Type:** ${drillType}
+              **Started:** ${new Date().toISOString()}
 
-### Status
-- [ ] Setup complete
-- [ ] Backup verified
-- [ ] Restore initiated
-- [ ] Data validation complete
-- [ ] RTO/RPO measured
-- [ ] Post-drill review complete
+              ### Status
+              - [ ] Setup complete
+              - [ ] Backup verified
+              - [ ] Restore initiated
+              - [ ] Data validation complete
+              - [ ] RTO/RPO measured
+              - [ ] Post-drill review complete
 
-### Notes
-Track progress and observations here.`,
+              ### Notes
+              Track progress and observations here.`,
               labels: ['disaster-recovery', 'drill', environment]
             });
 
