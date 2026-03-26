@@ -191,8 +191,9 @@ export async function waitForHealthySlot(config: RuntimeConfig): Promise<void> {
         );
         return;
       }
-    } catch (error) {
-      console.log(`Waiting for candidate slot ${config.candidateSlot}: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'health check failed';
+      console.log(`Waiting for candidate slot ${config.candidateSlot}: ${message}`);
     }
 
     await sleep(5000);
