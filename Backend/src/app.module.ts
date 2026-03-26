@@ -29,7 +29,7 @@ import { UserController } from './user.controller';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { WebsocketModule } from './websocket/websocket.module';
 import { validateEnv } from './config/env.validation';
-import { AbiRegistryModule } from './abi-registry/abi-registry.module';
+import { SupportModule } from './support/support.module';
 import { MultisigModule } from './multisig/multisig.module';
 
 @Module({
@@ -82,6 +82,7 @@ import { MultisigModule } from './multisig/multisig.module';
     WebhooksModule,
     RabbitmqModule,
     AbiRegistryModule,
+    SupportModule,
     MultisigModule,
   ],
   controllers: [AppController, UserController, DocsController],
