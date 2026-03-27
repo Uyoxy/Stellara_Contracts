@@ -1860,3 +1860,459 @@ model SecretAlert {
   @@index([createdAt])
   @@map("secret_alerts")
 }
+
+// Blockchain Transaction Queue Models
+enum TransactionQueuePriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum TransactionQueueStatus {
+  QUEUED
+  PROCESSING
+  SUBMITTED
+  STUCK
+  CONFIRMED
+  FAILED
+  CANCELLED
+  DEAD_LETTER
+}
+
+model BlockchainTransactionQueueItem {
+  id                 String                   @id @default(cuid())
+  idempotencyKey     String                   @unique @map("idempotency_key")
+  signerAddress      String                   @map("signer_address")
+  contractAddress    String                   @map("contract_address")
+  functionName       String                   @map("function_name")
+  payload            Json
+  metadata           Json?
+  priority           TransactionQueuePriority @default(NORMAL)
+  status             TransactionQueueStatus   @default(QUEUED)
+  nonce              BigInt?
+  feeBid             BigInt?                  @map("fee_bid")
+  maxFee             BigInt?                  @map("max_fee")
+  txHash             String?                  @map("tx_hash")
+  retryCount         Int                      @default(0) @map("retry_count")
+  maxRetries         Int                      @default(5) @map("max_retries")
+  nextAttemptAt      DateTime?                @map("next_attempt_at")
+  lastError          String?                  @map("last_error")
+  result             Json?
+  submittedAt        DateTime?                @map("submitted_at")
+  confirmedAt        DateTime?                @map("confirmed_at")
+  processingStartedAt DateTime?               @map("processing_started_at")
+  createdAt          DateTime                 @default(now()) @map("created_at")
+  updatedAt          DateTime                 @updatedAt @map("updated_at")
+
+  attempts           BlockchainTransactionAttempt[]
+
+  @@index([status, priority, createdAt])
+  @@index([signerAddress, status])
+  @@index([nextAttemptAt])
+  @@map("blockchain_tx_queue_items")
+}
+
+model BlockchainTransactionAttempt {
+  id            String                 @id @default(cuid())
+  queueItemId   String                 @map("queue_item_id")
+  queueItem     BlockchainTransactionQueueItem @relation(fields: [queueItemId], references: [id], onDelete: Cascade)
+  attemptNumber Int                    @map("attempt_number")
+  nonce         BigInt?
+  feeBid        BigInt?                @map("fee_bid")
+  txHash        String?                @map("tx_hash")
+  status        TransactionQueueStatus
+  error         String?
+  rawResponse   Json?                  @map("raw_response")
+  createdAt     DateTime               @default(now()) @map("created_at")
+
+  @@index([queueItemId, attemptNumber])
+  @@index([txHash])
+  @@map("blockchain_tx_attempts")
+}
+
+model BlockchainNonceState {
+  signerAddress String   @id @map("signer_address")
+  nextNonce     BigInt   @default(0) @map("next_nonce")
+  lastUsedNonce BigInt?  @map("last_used_nonce")
+  lastTxHash    String?  @map("last_tx_hash")
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("blockchain_nonce_states")
+}
+
+// Data Retention & Archival Models
+enum RetentionDataType {
+  TRADES
+  LOGS
+  SESSIONS
+  ANALYTICS
+  WEBHOOKS
+  AUDIT
+}
+
+model DataRetentionRule {
+  id              String            @id @default(cuid())
+  name            String
+  dataType        RetentionDataType @map("data_type")
+  tenantId        String?           @map("tenant_id")
+  retentionDays   Int               @map("retention_days")
+  archiveEnabled  Boolean           @default(true) @map("archive_enabled")
+  archivePrefix   String?           @map("archive_prefix")
+  secureDelete    Boolean           @default(true) @map("secure_delete")
+  legalHoldEnabled Boolean          @default(true) @map("legal_hold_enabled")
+  isActive        Boolean           @default(true) @map("is_active")
+  metadata        Json?
+  lastRunAt       DateTime?         @map("last_run_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  executions      RetentionExecution[]
+  legalHolds      LegalHold[]
+
+  @@unique([tenantId, dataType])
+  @@index([dataType, isActive])
+  @@map("data_retention_rules")
+}
+
+model LegalHold {
+  id          String            @id @default(cuid())
+  ruleId      String?           @map("rule_id")
+  rule        DataRetentionRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  dataType    RetentionDataType @map("data_type")
+  referenceId String            @map("reference_id")
+  reason      String
+  heldBy      String?           @map("held_by")
+  expiresAt   DateTime?         @map("expires_at")
+  isActive    Boolean           @default(true) @map("is_active")
+  metadata    Json?
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@index([dataType, referenceId, isActive])
+  @@index([expiresAt])
+  @@map("legal_holds")
+}
+
+model RetentionExecution {
+  id                 String            @id @default(cuid())
+  ruleId             String            @map("rule_id")
+  rule               DataRetentionRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  dataType           RetentionDataType @map("data_type")
+  status             String
+  archivedCount      Int               @default(0) @map("archived_count")
+  deletedCount       Int               @default(0) @map("deleted_count")
+  cryptoShreddedCount Int              @default(0) @map("crypto_shredded_count")
+  error              String?
+  report             Json?
+  startedAt          DateTime          @default(now()) @map("started_at")
+  finishedAt         DateTime?         @map("finished_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt])
+  @@index([dataType, createdAt])
+  @@map("retention_executions")
+}
+
+// Real-Time Analytics Rollups
+enum MetricRollupBucket {
+  M1
+  M5
+  M15
+  H1
+  D1
+}
+
+model RealtimeMetricRollup {
+  id          String           @id @default(cuid())
+  bucket      MetricRollupBucket
+  metricName  String           @map("metric_name")
+  metricValue Decimal          @db.Decimal(28, 8) @map("metric_value")
+  dimensions  Json?
+  bucketStart DateTime         @map("bucket_start")
+  bucketEnd   DateTime         @map("bucket_end")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  @@unique([bucket, metricName, bucketStart])
+  @@index([metricName, bucketStart])
+  @@index([bucket, bucketStart])
+  @@map("realtime_metric_rollups")
+}
+
+model RealtimeMetricSnapshot {
+  id          String   @id @default(cuid())
+  metricName  String   @map("metric_name")
+  metricValue Decimal  @db.Decimal(28, 8) @map("metric_value")
+  dimensions  Json?
+  capturedAt  DateTime @default(now()) @map("captured_at")
+
+  @@index([metricName, capturedAt])
+  @@map("realtime_metric_snapshots")
+}
+
+// ─── Compliance Engine Models ────────────────────────────────────────────────
+
+model SanctionsList {
+  id              String   @id @default(cuid())
+  name            String
+  type            String   // INDIVIDUAL, ENTITY, VESSEL, AIRCRAFT
+  listType        String   // OFAC, UN, EU, etc.
+  programs        String[]
+  aliases         String[]
+  dateOfBirth     DateTime? @map("date_of_birth")
+  placeOfBirth    String?  @map("place_of_birth")
+  nationality     String?
+  passportNumber  String?  @map("passport_number")
+  nationalIdNumber String? @map("national_id_number")
+  addresses       String[]
+  walletAddresses String[] @map("wallet_addresses")
+  remarks         String?
+  sourceListUrl   String?  @map("source_list_url")
+  isActive        Boolean  @default(true) @map("is_active")
+  lastUpdated     DateTime @default(now()) @map("last_updated")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([listType, isActive])
+  @@index([name])
+  @@index([walletAddresses])
+  @@map("sanctions_list")
+}
+
+model TravelRuleRecord {
+  id                     String   @id @default(cuid())
+  transactionHash        String   @unique @map("transaction_hash")
+  originatorName         String   @map("originator_name")
+  originatorAddress      String   @map("originator_address")
+  originatorAccountNumber String? @map("originator_account_number")
+  beneficiaryName        String   @map("beneficiary_name")
+  beneficiaryAddress     String   @map("beneficiary_address")
+  beneficiaryAccountNumber String? @map("beneficiary_account_number")
+  amountUsdCents         Int      @map("amount_usd_cents")
+  timestamp              DateTime @default(now())
+  status                 String   // PENDING, COMPLIANT, NON_COMPLIANT, EXEMPTED
+  exemptionReason        String?  @map("exemption_reason")
+  dataCollected          Boolean  @default(false) @map("data_collected")
+  verificationStatus     String   @default("UNVERIFIED") @map("verification_status")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  @@index([status, timestamp])
+  @@index([transactionHash])
+  @@map("travel_rule_records")
+}
+
+model ComplianceAuditTrail {
+  id                      String   @id @default(cuid())
+  transactionId           String   @unique @map("transaction_id")
+  complianceScore         Int      @map("compliance_score")
+  riskLevel               String   @map("risk_level")
+  sanctionsOriginator     Json?    @map("sanctions_originator")
+  sanctionsBeneficiary    Json?    @map("sanctions_beneficiary")
+  travelRuleRequired      Boolean  @default(false) @map("travel_rule_required")
+  travelRuleCompliant     Boolean? @map("travel_rule_compliant")
+  travelRuleRecordId      String?  @map("travel_rule_record_id")
+  currencyControlPermitted Boolean? @map("currency_control_permitted")
+  ctrRequired             Boolean  @default(false) @map("ctr_required")
+  sarRecommended          Boolean  @default(false) @map("sar_recommended")
+  flags                   String[]
+  recommendedAction       String   @map("recommended_action")
+  auditDate               DateTime @default(now()) @map("audit_date")
+  retentionUntil          DateTime @map("retention_until")
+  createdAt               DateTime @default(now()) @map("created_at")
+
+  @@index([transactionId])
+  @@index([riskLevel, auditDate])
+  @@index([auditDate])
+  @@map("compliance_audit_trail")
+}
+
+model SarReport {
+  id                String   @id @default(cuid())
+  transactionId     String   @unique @map("transaction_id")
+  filingDate        DateTime @default(now()) @map("filing_date")
+  status            String   // PENDING_FILING, FILED, ACCEPTED
+  narrative         String
+  suspiciousIndicators String[] @map("suspicious_indicators")
+  riskLevel         String   @map("risk_level")
+  amountInvolved    Decimal  @db.Decimal(18, 4) @map("amount_involved")
+  filedBy           String   @map("filed_by")
+  regulatoryBody    String   @default("FinCEN") @map("regulatory_body")
+  metadata          Json?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([status, filingDate])
+  @@map("sar_reports")
+}
+
+model CtrReport {
+  id                String   @id @default(cuid())
+  transactionId     String   @unique @map("transaction_id")
+  filingDate        DateTime @default(now()) @map("filing_date")
+  status            String   // PENDING_FILING, FILED, ACCEPTED
+  amount            Decimal  @db.Decimal(18, 4)
+  originatorInfo    Json?    @map("originator_info")
+  beneficiaryInfo   Json?    @map("beneficiary_info")
+  filedBy           String   @map("filed_by")
+  regulatoryBody    String   @default("FinCEN") @map("regulatory_body")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([status, filingDate])
+  @@map("ctr_reports")
+}
+
+// ─── MEV Protection Models ───────────────────────────────────────────────────
+
+model OrderCommitment {
+  id                    String   @id @default(cuid())
+  orderHash             String   @unique @map("order_hash")
+  userAddress           String   @map("user_address")
+  side                  String
+  pair                  String
+  amount                Decimal  @db.Decimal(18, 4)
+  price                 Decimal? @db.Decimal(18, 4)
+  orderType             String   @map("order_type")
+  maxSlippageBps        Int      @map("max_slippage_bps")
+  commitmentHash        String   @unique @map("commitment_hash")
+  nonce                 String
+  status                String   // COMMITTED, REVEALED, EXECUTED, CANCELLED, EXPIRED
+  committedAt           DateTime @default(now()) @map("committed_at")
+  revealedAt            DateTime? @map("revealed_at")
+  executedAt            DateTime? @map("executed_at")
+  expiresAt             DateTime? @map("expires_at")
+  blockNumber           BigInt?  @map("block_number")
+  fairOrderingSequence  BigInt   @map("fair_ordering_sequence")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([status, committedAt])
+  @@index([commitmentHash])
+  @@index([fairOrderingSequence])
+  @@map("order_commitments")
+}
+
+model EncryptedOrder {
+  id                String   @id @default(cuid())
+  ciphertext        String
+  shares            Json
+  threshold         Int
+  totalShares       Int      @map("total_shares")
+  createdAt         DateTime @default(now()) @map("created_at")
+  decryptedAt       DateTime? @map("decrypted_at")
+
+  @@index([createdAt])
+  @@map("encrypted_orders")
+}
+
+// ─── MPC Key Management Models ───────────────────────────────────────────────
+
+model MpcDistributedKey {
+  id                    String   @id @default(cuid())
+  purpose               String
+  thresholdScheme       String   @map("threshold_scheme") // 2-of-3, 3-of-5
+  requiredShares        Int      @map("required_shares")
+  totalShares           Int      @map("total_shares")
+  publicKey             String   @unique @map("public_key")
+  status                String   // ACTIVE, ROTATING, COMPROMISED, REVOKED
+  createdAt             DateTime @default(now()) @map("created_at")
+  lastRotatedAt         DateTime? @map("last_rotated_at")
+  nextRotationAt        DateTime? @map("next_rotation_at")
+  rotationPeriodDays    Int      @default(90) @map("rotation_period_days")
+  compromiseDetectedAt  DateTime? @map("compromise_detected_at")
+  revokedAt             DateTime? @map("revoked_at")
+
+  @@index([status])
+  @@index([nextRotationAt])
+  @@map("mpc_distributed_keys")
+}
+
+model MpcKeyShare {
+  id                  String   @id @default(cuid())
+  keyId               String   @map("key_id")
+  shareIndex          Int      @map("share_index")
+  shareData           String   @map("share_data") // Encrypted
+  location            String   // AWS_HSM, GCP_HSM, ON_PREM_HSM, AZURE_KEY_VAULT
+  hsmKeyId            String   @map("hsm_key_id")
+  publicKeyCommitment String   @map("public_key_commitment")
+  createdAt           DateTime @default(now()) @map("created_at")
+  lastUsedAt          DateTime? @map("last_used_at")
+  isActive            Boolean  @default(true) @map("is_active")
+
+  @@index([keyId, shareIndex])
+  @@index([location, isActive])
+  @@map("mpc_key_shares")
+}
+
+// ─── Strategy Marketplace Models ─────────────────────────────────────────────
+
+model TradingStrategy {
+  id                  String   @id @default(cuid())
+  name                String
+  description         String?
+  developerAddress    String   @map("developer_address")
+  strategyType        String   @map("strategy_type")
+  executionModule     String   @map("execution_module") // Docker/WASM
+  riskLevel           String   @map("risk_level")
+  pricingModel        String   @map("pricing_model")
+  priceUsdCents       Int?     @map("price_usd_cents")
+  profitSharePercent  Decimal? @db.Decimal(5, 2) @map("profit_share_percent")
+  maxPositionSize     Decimal? @db.Decimal(18, 4) @map("max_position_size")
+  stopLossPercent     Decimal? @db.Decimal(5, 2) @map("stop_loss_percent")
+  supportedPairs      String[] @map("supported_pairs")
+  totalReturn         Decimal? @db.Decimal(18, 4) @map("total_return")
+  sharpeRatio         Decimal? @db.Decimal(5, 2) @map("sharpe_ratio")
+  maxDrawdown         Decimal? @db.Decimal(5, 4) @map("max_drawdown")
+  winRate             Decimal? @db.Decimal(5, 4) @map("win_rate")
+  totalTrades         Int?     @map("total_trades")
+  subscriberCount     Int      @default(0) @map("subscriber_count")
+  totalAUM            Decimal? @db.Decimal(18, 4) @map("total_aum")
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@index([strategyType, isActive])
+  @@index([riskLevel, isActive])
+  @@index([sharpeRatio])
+  @@index([developerAddress])
+  @@map("trading_strategies")
+}
+
+model CopyTradeSubscription {
+  id                String   @id @default(cuid())
+  strategyId        String   @map("strategy_id")
+  userAddress       String   @map("user_address")
+  allocationAmount  Decimal  @db.Decimal(18, 4) @map("allocation_amount")
+  maxAllocation     Decimal? @db.Decimal(18, 4) @map("max_allocation")
+  stopLossOverride  Decimal? @db.Decimal(5, 2) @map("stop_loss_override")
+  status            String   @default("ACTIVE")
+  subscribedAt      DateTime @default(now()) @map("subscribed_at")
+  lastSyncAt        DateTime @default(now()) @map("last_sync_at")
+  totalProfit       Decimal? @db.Decimal(18, 4) @map("total_profit")
+  totalFeesPaid     Decimal? @db.Decimal(18, 4) @map("total_fees_paid")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([strategyId, status])
+  @@index([userAddress])
+  @@map("copy_trade_subscriptions")
+}
+
+model StrategyBacktestResult {
+  id                  String   @id @default(cuid())
+  strategyId          String   @map("strategy_id")
+  startDate           DateTime @map("start_date")
+  endDate             DateTime @map("end_date")
+  initialCapital      Decimal  @db.Decimal(18, 4) @map("initial_capital")
+  finalCapital        Decimal  @db.Decimal(18, 4) @map("final_capital")
+  totalReturn         Decimal  @db.Decimal(18, 4) @map("total_return")
+  annualizedReturn    Decimal  @db.Decimal(18, 4) @map("annualized_return")
+  sharpeRatio         Decimal  @db.Decimal(5, 2) @map("sharpe_ratio")
+  sortinoRatio        Decimal  @db.Decimal(5, 2) @map("sortino_ratio")
+  maxDrawdown         Decimal  @db.Decimal(5, 4) @map("max_drawdown")
+  winRate             Decimal  @db.Decimal(5, 4) @map("win_rate")
+  totalTrades         Int      @map("total_trades")
+  equityCurve         Json?    @map("equity_curve")
+  monthlyReturns      Json?    @map("monthly_returns")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([strategyId, startDate, endDate])
+  @@map("strategy_backtest_results")
+}
