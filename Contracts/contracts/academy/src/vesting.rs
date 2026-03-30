@@ -1,3 +1,4 @@
+use shared::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
 const MAX_BATCH_CLAIMS: u32 = 25;
@@ -161,6 +162,7 @@ impl AcademyVestingContract {
         admin: Address,
         reward_token: Address,
         governance: Address,
+        cb_config: CircuitBreakerConfig,
     ) -> Result<(), VestingError> {
         // Check if already initialized
         let init_key = symbol_short!("init");
@@ -183,9 +185,19 @@ impl AcademyVestingContract {
         let gov_key = symbol_short!("gov");
         env.storage().persistent().set(&gov_key, &governance);
 
+        // Store roles for shared GovernanceManager compatibility
+        let mut roles = soroban_sdk::Map::new(&env);
+        roles.set(admin.clone(), shared::governance::GovernanceRole::Admin);
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("roles"), &roles);
+
         // Initialize grant counter
         let counter_key = symbol_short!("cnt");
         env.storage().persistent().set(&counter_key, &0u64);
+
+        // Initialize circuit breaker
+        CircuitBreaker::init(&env, cb_config);
 
         Ok(())
     }
@@ -201,6 +213,9 @@ impl AcademyVestingContract {
         duration: u64,
     ) -> Result<u64, VestingError> {
         admin.require_auth();
+
+        // Check pause state via CircuitBreaker
+        CircuitBreaker::require_not_paused(&env, symbol_short!("grant"));
 
         // Verify caller is admin
         let admin_key = symbol_short!("admin");
@@ -429,6 +444,9 @@ impl AcademyVestingContract {
         revoke_delay: u64,
     ) -> Result<(), VestingError> {
         admin.require_auth();
+
+        // Check pause state via CircuitBreaker
+        CircuitBreaker::require_not_paused(&env, symbol_short!("revoke"));
 
         // Verify caller is admin
         let admin_key = symbol_short!("admin");

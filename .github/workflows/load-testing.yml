@@ -111,6 +111,14 @@ jobs:
           export API_BASE_URL="${{ secrets.STAGING_API_URL }}"
           export TEST_USER_EMAIL="${{ secrets.TEST_USER_EMAIL }}"
           export TEST_USER_PASSWORD="${{ secrets.TEST_USER_PASSWORD }}"
+
+          if [[ -z "$API_BASE_URL" ]]; then
+            echo "Skipping ${{ matrix.test-suite }} because STAGING_API_URL is not configured for this run."
+            echo "## Load Test Results - ${{ matrix.test-suite }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Skipped because \`STAGING_API_URL\` is unavailable for this workflow context." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
           
           case "${{ needs.setup.outputs.test-type }}" in
             "smoke")
@@ -147,10 +155,8 @@ jobs:
 
       - name: Generate performance report
         run: |
-          # Generate HTML report using k6 reporter
-          k6 run --out json=report.json tests/load/${{ matrix.test-suite }}.js || true
-          
-          # Create summary
+          # Summarize the load-test run that already completed above instead of
+          # rerunning the full scenario during report generation.
           echo "## Load Test Results - ${{ matrix.test-suite }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Test Type: ${{ needs.setup.outputs.test-type }}" >> $GITHUB_STEP_SUMMARY
@@ -175,10 +181,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          npm install -g @k6/html-reporter
 
       - name: Generate performance analysis
         run: |

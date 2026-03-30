@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use shared::circuit_breaker::{CircuitBreakerConfig, PauseLevel};
 use shared::governance::ProposalStatus;
 use soroban_sdk::{
     symbol_short,
@@ -29,8 +30,14 @@ fn setup_contract(
     let mut approvers = Vec::new(env);
     approvers.push_back(approver.clone());
 
+    let cb_config = CircuitBreakerConfig {
+        max_volume_per_period: 1_000_000_000i128,
+        max_tx_count_per_period: 100u64,
+        period_duration: 3600u64,
+    };
+
     env.mock_all_auths();
-    client.init(&admin, &approvers, &executor);
+    client.init(&admin, &approvers, &executor, &cb_config);
 
     (client, admin, approver, executor)
 }
@@ -48,10 +55,16 @@ fn test_contract_initialization() {
     let approver = Address::generate(&env);
     let executor = Address::generate(&env);
 
+    let cb_config = CircuitBreakerConfig {
+        max_volume_per_period: 10_000_000i128,
+        max_tx_count_per_period: 10u64,
+        period_duration: 3600u64,
+    };
+
     let mut approvers = Vec::new(&env);
     approvers.push_back(approver.clone());
 
-    client.init(&admin, &approvers, &executor);
+    client.init(&admin, &approvers, &executor, &cb_config);
 
     let version = client.get_version();
     assert_eq!(version, 1);
@@ -70,12 +83,18 @@ fn test_contract_cannot_be_initialized_twice() {
     let approver = Address::generate(&env);
     let executor = Address::generate(&env);
 
+    let cb_config = CircuitBreakerConfig {
+        max_volume_per_period: 10_000_000i128,
+        max_tx_count_per_period: 10u64,
+        period_duration: 3600u64,
+    };
+
     let mut approvers = Vec::new(&env);
     approvers.push_back(approver.clone());
 
-    client.init(&admin, &approvers, &executor);
+    client.init(&admin, &approvers, &executor, &cb_config);
 
-    let result = client.try_init(&admin, &approvers, &executor);
+    let result = client.try_init(&admin, &approvers, &executor, &cb_config);
     assert!(result.is_err());
 }
 
@@ -121,7 +140,13 @@ fn test_upgrade_proposal_approval_flow() {
     approvers.push_back(approver1.clone());
     approvers.push_back(approver2.clone());
 
-    client.init(&admin, &approvers, &executor);
+    let cb_config = CircuitBreakerConfig {
+        max_volume_per_period: 10_000_000i128,
+        max_tx_count_per_period: 10u64,
+        period_duration: 3600u64,
+    };
+
+    client.init(&admin, &approvers, &executor, &cb_config);
 
     let new_hash = symbol_short!("v2hash");
     let description = symbol_short!("Upgrade");
@@ -245,7 +270,13 @@ fn test_multi_sig_protection() {
     approvers.push_back(approver2.clone());
     approvers.push_back(approver3.clone());
 
-    client.init(&admin, &approvers, &executor);
+    let cb_config = CircuitBreakerConfig {
+        max_volume_per_period: 10_000_000i128,
+        max_tx_count_per_period: 10u64,
+        period_duration: 3600u64,
+    };
+
+    client.init(&admin, &approvers, &executor, &cb_config);
 
     let proposal_id = client.propose_upgrade(
         &admin,
@@ -664,7 +695,12 @@ fn test_batch_trade_gas_efficiency() {
     let executor = Address::generate(&env);
     let mut approvers = Vec::new(&env);
     approvers.push_back(approver);
-    client2.init(&admin, &approvers, &executor);
+    let cb_config = CircuitBreakerConfig {
+        max_volume_per_period: 1_000_000_000i128,
+        max_tx_count_per_period: 100u64,
+        period_duration: 3600u64,
+    };
+    client2.init(&admin, &approvers, &executor, &cb_config);
 
     env.budget().reset_default();
     let mut orders = Vec::new(&env);
